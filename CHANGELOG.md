@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.0.0 — Release
+
+### Added
+
+- Rate limiting: login 5/min/IP, register 60/min/IP, checkout 10/min/user,
+  ops writes 30/min/user; `429` with `Retry-After`.
+- CSRF protection for unsafe methods: `Origin` must match `Host`.
+- `/metrics` Prometheus counters: requests, status classes, auth failures,
+  rate-limited requests, checkout outcomes.
+- Structured request logs with `request_id` and `latency_ms`.
+- `scripts/e2e.sh`: health, register, cart, checkout, idempotency replay,
+  payment, RBAC, config history/rollback, audit, fail-closed checkout.
+- `scripts/oversell-test.sh`: 15 buyers, 10 units of stock, exactly 10
+  successful orders, 5 conflicts, stock ends at 0.
+- GitHub Actions CI: backend Debug build + `ctest`, frontend `npm run build`.
+- Nginx images build the Vue3 SPA into the image; Compose profiles for VPS
+  TLS and Cloudflare Tunnel remain available.
+- UI polish: page transitions, card hover/lift, skeleton loading, staggered
+  product entrance, cart badge, animated status tiles, responsive layouts.
+
+### Validation
+
+- Backend Debug build; `ctest`.
+- Frontend `npm run build` (1636 modules, Vite 5.4).
+- `scripts/e2e.sh`: **PASS=25 FAIL=0** (health, metrics, register, cart,
+  checkout, idempotency replay, pay, order detail, RBAC, config
+  create/update/history/rollback, audit, fail-closed).
+- `scripts/oversell-test.sh`: **created=10 rejected=5 other=0 stock_left=0**
+  with 15 buyers and 10 units of stock.
+- CI workflow runs on push (Node 22).
+
+### Known limits
+
+- SQL uses a centralized escape layer, not prepared statements yet.
+- Rate limits are in-process; multi-instance needs a shared store.
+- CairnKV has no snapshot/WAL compaction yet; WAL grows over time.
+- The public deployment (VPS / Cloudflare Tunnel) still needs a live run.
+- CairnKV kill-leader/partition drill for CairnShop is documented but not
+  scripted in CI.
+
 ## v0.3.1 — Developer Scripts and Non-Destructive Seed
 
 ### Added

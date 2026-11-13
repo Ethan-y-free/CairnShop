@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -23,7 +24,9 @@
 #include "cairnshop/config_admin.h"
 #include "cairnshop/config_service.h"
 #include "cairnshop/crypto.h"
+#include "cairnshop/metrics.h"
 #include "cairnshop/order.h"
+#include "cairnshop/rate_limiter.h"
 #include "cairnshop/logging.h"
 #include "cairnshop/mysql.h"
 
@@ -34,6 +37,9 @@ namespace
 {
 
 constexpr const char* kSessionCookie = "cairnshop_session";
+
+thread_local std::string t_request_id;
+thread_local std::chrono::steady_clock::time_point t_request_start;
 
 nlohmann::json UserJson(const User& user)
 {
@@ -112,6 +118,22 @@ void ErrorResponse(httplib::Response& res,
     body["error"]["code"] = code;
     body["error"]["message"] = message;
     JsonResponse(res, status, body);
+}
+
+bool CheckRate(RateLimiter& limiter,
+               Metrics& metrics,
+               const std::string& key,
+               int limit,
+               httplib::Response& res)
+{
+    if (limiter.Allow(key, limit, 60))
+    {
+        return true;
+    }
+    metrics.OnRateLimited();
+    res.set_header("Retry-After", "60");
+    ErrorResponse(res, 429, "rate_limited", "too many requests");
+    return false;
 }
 
 std::optional<nlohmann::json> ParseBody(const httplib::Request& req,
@@ -646,15 +668,55 @@ int main(int argc, char** argv)
     OrderService order_service(&pool, &config_service);
     AuditService audit(&pool);
     ConfigAdminService config_admin(&pool, &config_service, &audit);
+    RateLimiter rate_limiter;
+    Metrics metrics;
 
     httplib::Server server;
 
-    server.set_logger([](const httplib::Request& req,
-                         const httplib::Response& res) {
+    server.set_pre_routing_handler(
+        [&metrics](const httplib::Request& req, httplib::Response& res) {
+            t_request_id = RequestId(req);
+            t_request_start = std::chrono::steady_clock::now();
+            metrics.OnRequest();
+
+            const std::string method = req.method;
+            if (method != "GET" && method != "HEAD" && method != "OPTIONS")
+            {
+                const std::string origin = req.get_header_value("Origin");
+                if (!origin.empty())
+                {
+                    const size_t scheme = origin.find("://");
+                    const std::string origin_host =
+                        scheme == std::string::npos
+                            ? origin
+                            : origin.substr(scheme + 3);
+                    if (origin_host != req.get_header_value("Host"))
+                    {
+                        metrics.OnStatus(403);
+                        ErrorResponse(res, 403, "origin_rejected",
+                                      "cross-origin write rejected");
+                        return httplib::Server::HandlerResponse::Handled;
+                    }
+                }
+            }
+            return httplib::Server::HandlerResponse::Unhandled;
+        });
+
+    server.set_logger([&metrics](const httplib::Request& req,
+                                 const httplib::Response& res) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto latency_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - t_request_start)
+                .count();
+        metrics.OnStatus(res.status);
+
         nlohmann::json fields;
+        fields["request_id"] = t_request_id;
         fields["method"] = req.method;
         fields["path"] = req.path;
         fields["status"] = res.status;
+        fields["latency_ms"] = latency_ms;
         fields["remote_addr"] = req.remote_addr;
         LogEvent("info", "http_request", fields);
     });
@@ -685,9 +747,23 @@ int main(int argc, char** argv)
         res.set_content("not ready", "text/plain");
     });
 
+    server.Get("/metrics", [&metrics](const httplib::Request&,
+                                      httplib::Response& res) {
+        res.set_content(metrics.RenderPrometheus(),
+                        "text/plain; version=0.0.4");
+    });
+
     server.Post("/api/v1/auth/register",
-                [&auth, &config](const httplib::Request& req,
-                                 httplib::Response& res) {
+                [&auth, &config, &rate_limiter, &metrics](
+                    const httplib::Request& req, httplib::Response& res) {
+                    if (!CheckRate(rate_limiter,
+                                   metrics,
+                                   "register:" + ClientIp(req),
+                                   60,
+                                   res))
+                    {
+                        return;
+                    }
                     std::optional<nlohmann::json> body = ParseBody(req, res);
                     if (!body.has_value())
                     {
@@ -716,8 +792,16 @@ int main(int argc, char** argv)
                 });
 
     server.Post("/api/v1/auth/login",
-                [&auth, &config](const httplib::Request& req,
-                                 httplib::Response& res) {
+                [&auth, &config, &rate_limiter, &metrics](
+                    const httplib::Request& req, httplib::Response& res) {
+                    if (!CheckRate(rate_limiter,
+                                   metrics,
+                                   "login:" + ClientIp(req),
+                                   5,
+                                   res))
+                    {
+                        return;
+                    }
                     std::optional<nlohmann::json> body = ParseBody(req, res);
                     if (!body.has_value())
                     {
@@ -1005,10 +1089,18 @@ int main(int argc, char** argv)
                   });
 
     server.Post("/api/v1/orders",
-                [&auth, &order_service](const httplib::Request& req,
-                                        httplib::Response& res) {
+                [&auth, &order_service, &rate_limiter, &metrics](
+                    const httplib::Request& req, httplib::Response& res) {
                     std::optional<User> user = RequireUser(req, res, auth);
                     if (!user.has_value())
+                    {
+                        return;
+                    }
+                    if (!CheckRate(rate_limiter,
+                                   metrics,
+                                   "checkout:" + std::to_string(user->id),
+                                   10,
+                                   res))
                     {
                         return;
                     }
@@ -1016,6 +1108,7 @@ int main(int argc, char** argv)
                         req.get_header_value("Idempotency-Key");
                     const CheckoutResult result =
                         order_service.Checkout(user->id, idempotency_key);
+                    metrics.OnCheckout(result.http_status == 201);
                     res.status = result.http_status;
                     res.set_content(result.body, "application/json");
                 });
@@ -1139,10 +1232,18 @@ int main(int argc, char** argv)
                 });
 
     server.Put("/api/v1/ops/config",
-               [&auth, &config_admin](const httplib::Request& req,
-                                      httplib::Response& res) {
+               [&auth, &config_admin, &rate_limiter, &metrics](
+                   const httplib::Request& req, httplib::Response& res) {
                    std::optional<User> user = RequireUser(req, res, auth, "ops");
                    if (!user.has_value())
+                   {
+                       return;
+                   }
+                   if (!CheckRate(rate_limiter,
+                                  metrics,
+                                  "ops:" + std::to_string(user->id),
+                                  30,
+                                  res))
                    {
                        return;
                    }
@@ -1211,10 +1312,18 @@ int main(int argc, char** argv)
                });
 
     server.Post("/api/v1/ops/config/rollback",
-                [&auth, &config_admin](const httplib::Request& req,
-                                       httplib::Response& res) {
+                [&auth, &config_admin, &rate_limiter, &metrics](
+                    const httplib::Request& req, httplib::Response& res) {
                     std::optional<User> user = RequireUser(req, res, auth, "ops");
                     if (!user.has_value())
+                    {
+                        return;
+                    }
+                    if (!CheckRate(rate_limiter,
+                                   metrics,
+                                   "ops:" + std::to_string(user->id),
+                                   30,
+                                   res))
                     {
                         return;
                     }
@@ -1493,11 +1602,19 @@ int main(int argc, char** argv)
                });
 
     server.Post("/api/v1/ops/catalog/categories",
-                [&auth, &catalog, &audit](const httplib::Request& req,
-                                          httplib::Response& res) {
+                [&auth, &catalog, &audit, &rate_limiter, &metrics](
+                    const httplib::Request& req, httplib::Response& res) {
                     std::optional<User> user =
                         RequireUser(req, res, auth, "ops");
                     if (!user.has_value())
+                    {
+                        return;
+                    }
+                    if (!CheckRate(rate_limiter,
+                                   metrics,
+                                   "ops:" + std::to_string(user->id),
+                                   30,
+                                   res))
                     {
                         return;
                     }
@@ -1547,11 +1664,19 @@ int main(int argc, char** argv)
                 });
 
     server.Post("/api/v1/ops/catalog/products",
-                [&auth, &catalog, &audit](const httplib::Request& req,
-                                          httplib::Response& res) {
+                [&auth, &catalog, &audit, &rate_limiter, &metrics](
+                    const httplib::Request& req, httplib::Response& res) {
                     std::optional<User> user =
                         RequireUser(req, res, auth, "ops");
                     if (!user.has_value())
+                    {
+                        return;
+                    }
+                    if (!CheckRate(rate_limiter,
+                                   metrics,
+                                   "ops:" + std::to_string(user->id),
+                                   30,
+                                   res))
                     {
                         return;
                     }
@@ -1621,11 +1746,19 @@ int main(int argc, char** argv)
                 });
 
     server.Patch(R"(/api/v1/ops/catalog/products/(\d+))",
-                 [&auth, &catalog, &audit](const httplib::Request& req,
-                                           httplib::Response& res) {
+                 [&auth, &catalog, &audit, &rate_limiter, &metrics](
+                     const httplib::Request& req, httplib::Response& res) {
                      std::optional<User> user =
                          RequireUser(req, res, auth, "ops");
                      if (!user.has_value())
+                     {
+                         return;
+                     }
+                     if (!CheckRate(rate_limiter,
+                                    metrics,
+                                    "ops:" + std::to_string(user->id),
+                                    30,
+                                    res))
                      {
                          return;
                      }

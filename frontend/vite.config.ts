@@ -9,7 +9,9 @@ export default defineConfig({
         proxy: {
             '/api': {
                 target: 'http://127.0.0.1:8080',
-                changeOrigin: true
+                // Keep the browser Host so the backend's Origin check sees the
+                // same host on write requests.
+                changeOrigin: false
             }
         }
     }

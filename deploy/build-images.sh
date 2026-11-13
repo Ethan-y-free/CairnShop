@@ -22,10 +22,10 @@ docker build -f "$ROOT/deploy/Dockerfile.cairnkv.local" \
 
 echo "nginx tls : cairnshop-nginx:$VERSION"
 docker build -f "$ROOT/deploy/nginx/Dockerfile" \
-    -t "cairnshop-nginx:$VERSION" "$ROOT/deploy"
+    -t "cairnshop-nginx:$VERSION" "$ROOT"
 
 echo "nginx tun : cairnshop-nginx-tunnel:$VERSION"
 docker build -f "$ROOT/deploy/nginx/Dockerfile.tunnel" \
-    -t "cairnshop-nginx-tunnel:$VERSION" "$ROOT/deploy"
+    -t "cairnshop-nginx-tunnel:$VERSION" "$ROOT"
 
 echo "done"

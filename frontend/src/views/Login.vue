@@ -30,8 +30,9 @@ async function submit() {
 </script>
 
 <template>
-    <el-card class="auth-card">
-        <h2>登录</h2>
+    <el-card class="auth-card fade-up">
+        <h2>欢迎回来</h2>
+        <p class="sub muted">登录后可以加购、下单和查看订单。</p>
         <el-form label-position="top" @submit.prevent="submit">
             <el-form-item label="邮箱">
                 <el-input v-model="email" type="email" />
@@ -57,5 +58,9 @@ async function submit() {
 .hint {
     margin-top: 1rem;
     color: #6b7280;
+}
+.sub {
+    margin: 0 0 1rem;
+    font-size: 0.9rem;
 }
 </style>

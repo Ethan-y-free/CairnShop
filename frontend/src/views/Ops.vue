@@ -226,7 +226,7 @@ onMounted(async () => {
 </script>
 
 <template>
-    <div>
+    <div class="fade-up">
         <h2>运营台</h2>
         <el-tabs v-model="tab">
             <el-tab-pane label="配置" name="config">
@@ -283,6 +283,7 @@ onMounted(async () => {
                                 v-model="editor"
                                 type="textarea"
                                 :rows="16"
+                                class="editor"
                                 placeholder="JSON 配置"
                             />
                         </el-col>
@@ -366,15 +367,31 @@ onMounted(async () => {
             </el-tab-pane>
 
             <el-tab-pane label="状态" name="status">
-                <el-card v-if="status" style="margin-bottom: 12px">
-                    <p>MySQL：{{ status.mysql_ok ? 'OK' : '不可用' }}</p>
-                    <p>
-                        配置缓存：{{ status.config.age_ms }} ms ·
-                        {{ status.config.stale ? '已过期' : '新鲜' }} ·
-                        {{ status.config.keys }} 个 key
-                    </p>
-                </el-card>
-                <el-card v-if="status">
+                <div v-if="status" class="tiles">
+                    <div class="tile">
+                        <span>MySQL</span>
+                        <strong :class="status.mysql_ok ? 'ok' : 'bad'">
+                            {{ status.mysql_ok ? 'OK' : '不可用' }}
+                        </strong>
+                    </div>
+                    <div class="tile">
+                        <span>CairnKV</span>
+                        <strong>{{ status.cairnkv.ok ? 'OK' : '不可用' }}</strong>
+                    </div>
+                    <div class="tile">
+                        <span>配置年龄</span>
+                        <strong>{{ status.config.age_ms }} ms</strong>
+                    </div>
+                    <div class="tile">
+                        <span>配置 key</span>
+                        <strong>{{ status.config.keys }}</strong>
+                    </div>
+                    <div class="tile">
+                        <span>缓存状态</span>
+                        <strong>{{ status.config.stale ? '过期' : '新鲜' }}</strong>
+                    </div>
+                </div>
+                <el-card v-if="status" style="margin-top: 12px">
                     <h4>CairnKV</h4>
                     <pre>{{ cairnkvText }}</pre>
                 </el-card>
@@ -384,6 +401,50 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.editor :deep(textarea) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.55;
+}
+
+.tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.8rem;
+}
+
+.tile {
+    padding: 0.9rem 1rem;
+    border-radius: var(--radius);
+    background: #fff;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    display: grid;
+    gap: 0.3rem;
+    transition: transform 0.2s ease;
+}
+
+.tile:hover {
+    transform: translateY(-3px);
+}
+
+.tile span {
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+.tile strong {
+    font-size: 1.2rem;
+}
+
+.ok {
+    color: #16a34a;
+}
+
+.bad {
+    color: var(--danger);
+}
+
 pre {
     background: #f3f4f6;
     padding: 1rem;

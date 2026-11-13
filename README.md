@@ -2,9 +2,9 @@
 
 An e-commerce platform with a storefront and an operations console.
 
-**v0.3.0** — authentication, catalog, cart, checkout, promotions,
-idempotency, mock payment, the CairnKV config plane, the operations API, and
-the Vue3 storefront + operations console.
+**v1.0.0** — authentication, catalog, cart, checkout, promotions,
+idempotency, mock payment, the CairnKV config plane, the operations API, the
+Vue3 storefront + operations console, CI, e2e, and the oversell test.
 
 ## 功能
 
@@ -27,7 +27,8 @@ CairnShop 包含两部分：
 | 幂等下单 / 模拟支付 | 已实现 |
 | 运营台（配置 / 商品 / 审计 / CairnKV 状态） | 已实现 |
 | Vue3 商城 + 运营前端 | 已实现 |
-| Docker Compose / CI / e2e / 压测 | 规划中（Compose/Dockerfile 已提供） |
+| 限流 / CSRF Origin 校验 / metrics / 请求日志 | 已实现 |
+| Docker Compose / CI / e2e / 超卖压测 | 已实现（部署需按 DEPLOY 验证） |
 
 ## 架构
 
@@ -148,7 +149,7 @@ curl -s localhost:8080/readyz
 
 ### 前端
 
-需要 Node 18+：
+需要 Node 18+（建议 22；Element Plus 的部分依赖声明 Node 22）：
 
 ```bash
 cd frontend
@@ -193,6 +194,9 @@ npm run build               # 产物在 frontend/dist/
 | GET | `/api/v1/ops/status` | MySQL / CairnKV / 配置缓存状态 |
 | GET | `/api/v1/ops/catalog/products` | 运营商品列表（含 draft/archived） |
 
+运维：`GET /metrics` 输出 Prometheus 文本（请求数、状态码、鉴权失败、限流、
+下单成功/失败）。
+
 ```bash
 curl -c /tmp/cairnshop.cookies -H 'Content-Type: application/json' \
   -d '{"email":"alice@example.com","password":"secret123","display_name":"Alice"}' \
@@ -207,8 +211,11 @@ curl -s 'http://localhost:8080/api/v1/catalog/products?limit=5'
 - 密码 PBKDF2-SHA256（120k 次、16B salt、32B hash），常量时间比较；
 - 会话 32B 随机 token，DB 只存 SHA-256；HttpOnly + SameSite=Lax，7 天过期；
 - 运营接口强制 `ops` / `admin` 角色；
+- 限流：登录 5/min/IP、注册 60/min/IP、下单 10/min/用户、运营写 30/min/用户；
+- 写请求校验 `Origin` 与 `Host` 同源（SameSite=Lax 之外的 CSRF 防护）；
 - SQL 参数统一经转义层处理；prepared statements 在后续加固中；
-- 输入校验：email / password / display_name / slug / 商品状态 / 数值范围。
+- 输入校验：email / password / display_name / slug / 商品状态 / 数值范围；
+- 结构化请求日志带 `request_id` 与 `latency_ms`，`/metrics` 暴露 Prometheus 指标。
 
 ## 验证
 
@@ -219,7 +226,13 @@ curl -s 'http://localhost:8080/api/v1/catalog/products?limit=5'
   支付 → 订单列表 → 运营读配置；关闭 `checkout_enabled` 时下单返回 503。
 - W8：前端 `npm run build`；运营台配置保存 → 版本 +1 → 历史出现旧版本 →
   回滚生效；审计记录写入；状态页显示 MySQL / CairnKV / 配置缓存。
-- 后续：库存并发测试 / CairnKV 故障演练 / e2e / 压测。
+- W9：
+  - `bash scripts/e2e.sh`：健康、注册/加购/下单/幂等重放/支付、RBAC、
+    配置历史/回滚、审计、fail-closed；
+  - `bash scripts/oversell-test.sh`：15 个用户抢 10 件库存，恰好 10 单成功、
+    5 单 409、库存归零；
+  - `curl -s localhost:8080/metrics`：Prometheus 指标；
+  - CI：后端构建 + ctest、前端 `npm run build`。
 
 ## 工程结构
 
@@ -243,6 +256,6 @@ docs/                        设计 / 发布说明
 
 ## Roadmap
 
-- Docker Compose 生产部署收尾（TLS / Cloudflare Tunnel / 备份）。
-- GitHub Actions CI、e2e、压测与 CairnKV 故障演练。
-- 工程加固：prepared statements、限流、CSRF、metrics、结构化请求日志。
+- 生产部署收尾：Cloudflare Tunnel / VPS、TLS、备份与恢复演练。
+- CairnKV 故障演练：压测中 kill leader / 分区 / 重启。
+- 工程加固：prepared statements、共享限流（多实例）、更细的 metrics。

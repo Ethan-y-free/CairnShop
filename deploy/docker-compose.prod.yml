@@ -153,8 +153,8 @@ services:
   nginx:
     image: cairnshop-nginx:${CAIRNSHOP_VERSION:-dev}
     build:
-      context: .
-      dockerfile: nginx/Dockerfile
+      context: ..
+      dockerfile: deploy/nginx/Dockerfile
     profiles: ["vps"]
     environment:
       DOMAIN: ${DOMAIN}
@@ -186,8 +186,8 @@ services:
   nginx-tunnel:
     image: cairnshop-nginx-tunnel:${CAIRNSHOP_VERSION:-dev}
     build:
-      context: .
-      dockerfile: nginx/Dockerfile.tunnel
+      context: ..
+      dockerfile: deploy/nginx/Dockerfile.tunnel
     profiles: ["tunnel-quick", "tunnel-named"]
     depends_on:
       backend:

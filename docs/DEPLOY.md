@@ -106,9 +106,9 @@ curl -fsS "https://$DOMAIN/readyz"; echo
 curl -fsS "https://$DOMAIN/api/v1/catalog/products?limit=1"; echo
 ```
 
-`readyz` requires MySQL and a fresh CairnKV config cache. The Vue3 app lives
-in `frontend/`; wiring its build into the Nginx image is W9 work. Until then
-the Nginx image serves a placeholder.
+`readyz` requires MySQL and a fresh CairnKV config cache. The Nginx image
+builds the Vue3 app from `frontend/` at image-build time and serves
+`/usr/share/nginx/html`.
 
 ## 6. Certificate renewal
 

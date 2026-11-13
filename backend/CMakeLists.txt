@@ -40,6 +40,8 @@ add_library(cairnshop_core STATIC
     src/order.cc
     src/audit.cc
     src/config_admin.cc
+    src/rate_limiter.cc
+    src/metrics.cc
 )
 
 target_include_directories(cairnshop_core PUBLIC
