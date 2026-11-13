@@ -67,6 +67,17 @@ Config LoadConfigFromEnv()
     config.http_host = EnvString("CAIRNSHOP_HTTP_HOST", config.http_host);
     config.http_port = EnvInt("CAIRNSHOP_HTTP_PORT", config.http_port);
 
+    config.cairnkv_host =
+        EnvString("CAIRNSHOP_CAIRNKV_HOST", config.cairnkv_host);
+    config.cairnkv_port =
+        EnvInt("CAIRNSHOP_CAIRNKV_PORT", config.cairnkv_port);
+    config.cairnkv_addrs =
+        EnvString("CAIRNSHOP_CAIRNKV_ADDRS", config.cairnkv_addrs);
+    config.config_refresh_ms =
+        EnvInt("CAIRNSHOP_CONFIG_REFRESH_MS", config.config_refresh_ms);
+    config.config_max_stale_ms =
+        EnvInt("CAIRNSHOP_CONFIG_MAX_STALE_MS", config.config_max_stale_ms);
+
     config.session_ttl_seconds =
         EnvInt("CAIRNSHOP_SESSION_TTL_SECONDS", config.session_ttl_seconds);
     config.cookie_secure =

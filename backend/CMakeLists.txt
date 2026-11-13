@@ -34,6 +34,10 @@ add_library(cairnshop_core STATIC
     src/crypto.cc
     src/auth.cc
     src/catalog.cc
+    src/config_service.cc
+    src/cart.cc
+    src/promo.cc
+    src/order.cc
 )
 
 target_include_directories(cairnshop_core PUBLIC
@@ -45,6 +49,7 @@ target_include_directories(cairnshop_core PUBLIC
 target_link_libraries(cairnshop_core PUBLIC
     OpenSSL::Crypto
     Threads::Threads
+    cairnkv_client
     ${MYSQL_LIBRARY}
 )
 
@@ -54,6 +59,7 @@ target_link_libraries(cairnshop-backend PRIVATE cairnshop_core)
 add_executable(cairnshop_tests
     tests/crypto_test.cc
     tests/validation_test.cc
+    tests/promo_test.cc
 )
 target_link_libraries(cairnshop_tests PRIVATE
     cairnshop_core

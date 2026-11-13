@@ -2,7 +2,8 @@
 
 An e-commerce platform with a storefront and an operations console.
 
-**v0.1.1** — authentication, roles, catalog, migrations and seed data.
+**v0.2.0** — authentication, cart, checkout, promotions, idempotency, mock
+payment, and the CairnKV config plane.
 
 ## 功能
 
@@ -18,10 +19,11 @@ CairnShop 包含两部分：
 | 注册 / 登录 / 会话 / 角色（customer / ops / admin） | 已实现 |
 | 商品目录（分类、列表、详情、运营创建/更新） | 已实现 |
 | MySQL schema 迁移 + 种子数据 | 已实现 |
-| 购物车 | 规划中 |
-| 下单 / 库存事务 / 订单状态机 | 规划中 |
-| 促销 / 特性开关 / 配置版本与回滚 | 规划中 |
-| 幂等下单 / 模拟支付 | 规划中 |
+| 购物车 | 已实现 |
+| 下单 / 库存事务 / 订单状态机（pending → paid / cancelled） | 已实现 |
+| 促销 / 特性开关 / 配置读取（CairnKV） | 已实现 |
+| 配置版本 / 历史 / 回滚 | 规划中 |
+| 幂等下单 / 模拟支付 | 已实现 |
 | 运营台（审计、配置历史、集群状态） | 规划中 |
 | Vue3 商城 + 运营前端 | 规划中 |
 | Docker Compose / CI / e2e / 压测 | 规划中 |
@@ -113,6 +115,11 @@ set +a
 
 ./build/backend/cairnshop-backend migrate
 ./build/backend/cairnshop-backend seed
+
+# CairnKV 3 节点需先运行在 127.0.0.1:6666-6668
+export CAIRNSHOP_CAIRNKV_ADDRS=127.0.0.1:6666,127.0.0.1:6667,127.0.0.1:6668
+./build/backend/cairnshop-backend seed-config
+
 ./build/backend/cairnshop-backend serve
 ```
 
@@ -140,6 +147,16 @@ curl -s localhost:8080/readyz
 | POST | `/api/v1/ops/catalog/categories` | 运营：创建分类（ops/admin） |
 | POST | `/api/v1/ops/catalog/products` | 运营：创建商品 |
 | PATCH | `/api/v1/ops/catalog/products/:id` | 运营：更新商品 |
+| GET | `/api/v1/cart` | 当前用户购物车 |
+| POST | `/api/v1/cart/items` | 加入购物车 |
+| PATCH | `/api/v1/cart/items/:product_id` | 修改数量（0 删除） |
+| DELETE | `/api/v1/cart/items/:product_id` | 移除购物车条目 |
+| POST | `/api/v1/orders` | 从购物车下单（`Idempotency-Key` 必填） |
+| GET | `/api/v1/orders` | 我的订单 |
+| GET | `/api/v1/orders/:order_no` | 订单详情 |
+| POST | `/api/v1/orders/:order_no/pay` | 模拟支付 |
+| POST | `/api/v1/orders/:order_no/cancel` | 取消订单并回补库存 |
+| GET | `/api/v1/ops/config` | 运营读配置（`?key=` 为线性一致读） |
 
 ```bash
 curl -c /tmp/cairnshop.cookies -H 'Content-Type: application/json' \
@@ -163,7 +180,9 @@ curl -s 'http://localhost:8080/api/v1/catalog/products?limit=5'
 - 单元测试：密码哈希、token、输入校验。
 - 集成冒烟：迁移 + 种子 + 健康检查 + 注册 / 登录 / me + 商品列表 +
   运营创建商品 + customer 访问运营接口返回 403。
-- 后续：订单事务 / 幂等 / 库存并发 / CairnKV 故障演练 / e2e / 压测。
+- W7 冒烟：`bash scripts/w7-smoke.sh` 覆盖购物车 → 下单 → 幂等重放 →
+  支付 → 订单列表 → 运营读配置；关闭 `checkout_enabled` 时下单返回 503。
+- 后续：库存并发测试 / CairnKV 故障演练 / e2e / 压测。
 
 ## 工程结构
 
@@ -187,10 +206,7 @@ docs/                        设计 / 发布说明
 
 ## Roadmap
 
-- 购物车、下单、库存事务、订单状态机。
-- 促销、特性开关、配置版本 / 回滚。
-- 幂等下单与模拟支付。
-- 运营台：审计、配置历史、CairnKV 集群状态。
+- 运营台：商品 / 促销管理、审计、配置版本 / 历史 / 回滚、CairnKV 集群状态。
 - Vue3 商城 + 运营前端。
 - Docker Compose、CI、e2e、压测与故障演练。
 - 工程加固：prepared statements、限流、CSRF、metrics、结构化请求日志。

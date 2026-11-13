@@ -13,6 +13,9 @@ migrate:
 seed:
 	./build/backend/cairnshop-backend seed
 
+seed-config:
+	./build/backend/cairnshop-backend seed-config
+
 run:
 	./build/backend/cairnshop-backend serve
 

@@ -12,4 +12,9 @@ endif()
 
 enable_testing()
 
+find_package(Threads REQUIRED)
+
+# Vendored CairnKV client (v1.0.1): client + wire protocol only.
+add_subdirectory(third_party/cairnkv EXCLUDE_FROM_ALL)
+
 add_subdirectory(backend)

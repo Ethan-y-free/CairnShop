@@ -17,6 +17,12 @@ struct Config
     std::string http_host = "0.0.0.0";
     int http_port = 8080;
 
+    std::string cairnkv_host = "127.0.0.1";
+    int cairnkv_port = 6666;
+    std::string cairnkv_addrs;
+    int config_refresh_ms = 500;
+    int config_max_stale_ms = 30000;
+
     int session_ttl_seconds = 7 * 24 * 3600;
     bool cookie_secure = false;
 

@@ -16,9 +16,12 @@
 #include "nlohmann/json.hpp"
 
 #include "cairnshop/auth.h"
+#include "cairnshop/cart.h"
 #include "cairnshop/catalog.h"
 #include "cairnshop/config.h"
+#include "cairnshop/config_service.h"
 #include "cairnshop/crypto.h"
+#include "cairnshop/order.h"
 #include "cairnshop/logging.h"
 #include "cairnshop/mysql.h"
 
@@ -60,6 +63,33 @@ nlohmann::json ProductJson(const Product& product)
     body["price_cents"] = product.price_cents;
     body["stock"] = product.stock;
     body["status"] = product.status;
+    return body;
+}
+
+nlohmann::json CartItemJson(const CartItem& item)
+{
+    nlohmann::json body;
+    body["product_id"] = item.product_id;
+    body["sku"] = item.sku;
+    body["name"] = item.name;
+    body["price_cents"] = item.price_cents;
+    body["stock"] = item.stock;
+    body["status"] = item.status;
+    body["quantity"] = item.quantity;
+    return body;
+}
+
+nlohmann::json CartJson(const std::vector<CartItem>& items)
+{
+    nlohmann::json body;
+    body["items"] = nlohmann::json::array();
+    int64_t subtotal_cents = 0;
+    for (const CartItem& item : items)
+    {
+        body["items"].push_back(CartItemJson(item));
+        subtotal_cents += item.price_cents * item.quantity;
+    }
+    body["subtotal_cents"] = subtotal_cents;
     return body;
 }
 
@@ -473,6 +503,55 @@ bool RunSeed(MySqlPool& pool, const Config& config)
     return true;
 }
 
+std::vector<CairnKvAddress> CairnKvSeeds(const Config& config)
+{
+    std::vector<CairnKvAddress> seeds;
+    if (!config.cairnkv_addrs.empty())
+    {
+        size_t pos = 0;
+        while (pos <= config.cairnkv_addrs.size())
+        {
+            const size_t end = config.cairnkv_addrs.find(',', pos);
+            std::string part = config.cairnkv_addrs.substr(pos, end - pos);
+            while (!part.empty() && part.front() == ' ')
+            {
+                part.erase(part.begin());
+            }
+            while (!part.empty() && part.back() == ' ')
+            {
+                part.pop_back();
+            }
+            const size_t colon = part.rfind(':');
+            if (colon != std::string::npos && colon > 0)
+            {
+                try
+                {
+                    const int port = std::stoi(part.substr(colon + 1));
+                    if (port > 0 && port <= 65535)
+                    {
+                        seeds.emplace_back(part.substr(0, colon),
+                                           static_cast<uint16_t>(port));
+                    }
+                }
+                catch (...)
+                {
+                }
+            }
+            if (end == std::string::npos)
+            {
+                break;
+            }
+            pos = end + 1;
+        }
+    }
+    if (seeds.empty())
+    {
+        seeds.emplace_back(config.cairnkv_host,
+                           static_cast<uint16_t>(config.cairnkv_port));
+    }
+    return seeds;
+}
+
 }
 
 }
@@ -481,14 +560,25 @@ int main(int argc, char** argv)
 {
     using namespace cairnshop;
 
+    const std::string command = argc > 1 ? argv[1] : "serve";
+    const Config config = LoadConfigFromEnv();
+
+    if (command == "seed-config")
+    {
+        std::string error;
+        const bool ok = SeedConfig(CairnKvSeeds(config), &error);
+        if (!ok)
+        {
+            LogError("seed_config", error);
+        }
+        return ok ? 0 : 1;
+    }
+
     if (mysql_library_init(0, nullptr, nullptr) != 0)
     {
         LogError("mysql_init", "mysql_library_init failed");
         return 1;
     }
-
-    const std::string command = argc > 1 ? argv[1] : "serve";
-    const Config config = LoadConfigFromEnv();
 
     MySqlPool pool(config);
     std::string error;
@@ -518,10 +608,24 @@ int main(int argc, char** argv)
 
     if (command != "serve")
     {
-        LogError("usage", "usage: cairnshop-backend [serve|migrate|seed]");
+        LogError("usage",
+                 "usage: cairnshop-backend [serve|migrate|seed|seed-config]");
         mysql_library_end();
         return 1;
     }
+
+    ConfigService config_service(CairnKvSeeds(config),
+                                 config.config_refresh_ms,
+                                 config.config_max_stale_ms);
+    std::string config_error;
+    config_service.Start(&config_error);
+    if (!config_error.empty())
+    {
+        LogError("config_refresh", config_error);
+    }
+
+    CartService cart_service(&pool);
+    OrderService order_service(&pool, &config_service);
 
     httplib::Server server;
 
@@ -550,9 +654,9 @@ int main(int argc, char** argv)
         res.set_content("ok", "text/plain");
     });
 
-    server.Get("/readyz", [&pool](const httplib::Request&,
-                                  httplib::Response& res) {
-        if (pool.Ping())
+    server.Get("/readyz", [&pool, &config_service](const httplib::Request&,
+                                                   httplib::Response& res) {
+        if (pool.Ping() && config_service.Ready())
         {
             res.set_content("ok", "text/plain");
             return;
@@ -749,6 +853,310 @@ int main(int argc, char** argv)
                    JsonResponse(res, 200, ProductJson(*product));
                });
 
+    server.Get("/api/v1/cart",
+               [&auth, &cart_service](const httplib::Request& req,
+                                      httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth);
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+                   std::string error;
+                   std::optional<std::vector<CartItem>> items =
+                       cart_service.Get(user->id, &error);
+                   if (!items.has_value())
+                   {
+                       ErrorResponse(res, 500, "db_error", error);
+                       return;
+                   }
+                   JsonResponse(res, 200, CartJson(*items));
+               });
+
+    server.Post("/api/v1/cart/items",
+                [&auth, &cart_service](const httplib::Request& req,
+                                       httplib::Response& res) {
+                    std::optional<User> user = RequireUser(req, res, auth);
+                    if (!user.has_value())
+                    {
+                        return;
+                    }
+                    std::optional<nlohmann::json> body = ParseBody(req, res);
+                    if (!body.has_value())
+                    {
+                        return;
+                    }
+                    int64_t product_id = 0;
+                    int64_t quantity = 0;
+                    if (!GetInt64(*body, "product_id", &product_id) ||
+                        !GetInt64(*body, "quantity", &quantity) ||
+                        product_id <= 0 || quantity <= 0 || quantity > 99)
+                    {
+                        ErrorResponse(res, 400, "invalid_argument",
+                                      "product_id and quantity are required");
+                        return;
+                    }
+
+                    std::string error;
+                    if (!cart_service.Add(user->id,
+                                          static_cast<uint64_t>(product_id),
+                                          static_cast<int>(quantity),
+                                          &error))
+                    {
+                        ErrorResponse(res, 400, "cart_error", error);
+                        return;
+                    }
+                    std::optional<std::vector<CartItem>> items =
+                        cart_service.Get(user->id, &error);
+                    if (!items.has_value())
+                    {
+                        ErrorResponse(res, 500, "db_error", error);
+                        return;
+                    }
+                    JsonResponse(res, 200, CartJson(*items));
+                });
+
+    server.Patch(R"(/api/v1/cart/items/(\d+))",
+                 [&auth, &cart_service](const httplib::Request& req,
+                                        httplib::Response& res) {
+                     std::optional<User> user = RequireUser(req, res, auth);
+                     if (!user.has_value())
+                     {
+                         return;
+                     }
+                     std::optional<nlohmann::json> body = ParseBody(req, res);
+                     if (!body.has_value())
+                     {
+                         return;
+                     }
+                     int64_t quantity = 0;
+                     if (!GetInt64(*body, "quantity", &quantity) ||
+                         quantity < 0 || quantity > 99)
+                     {
+                         ErrorResponse(res, 400, "invalid_argument",
+                                       "quantity must be 0-99");
+                         return;
+                     }
+
+                     const uint64_t product_id =
+                         std::stoull(req.matches[1].str());
+                     std::string error;
+                     if (!cart_service.SetQuantity(user->id,
+                                                   product_id,
+                                                   static_cast<int>(quantity),
+                                                   &error))
+                     {
+                         ErrorResponse(res, 400, "cart_error", error);
+                         return;
+                     }
+                     std::optional<std::vector<CartItem>> items =
+                         cart_service.Get(user->id, &error);
+                     if (!items.has_value())
+                     {
+                         ErrorResponse(res, 500, "db_error", error);
+                         return;
+                     }
+                     JsonResponse(res, 200, CartJson(*items));
+                 });
+
+    server.Delete(R"(/api/v1/cart/items/(\d+))",
+                  [&auth, &cart_service](const httplib::Request& req,
+                                         httplib::Response& res) {
+                      std::optional<User> user = RequireUser(req, res, auth);
+                      if (!user.has_value())
+                      {
+                          return;
+                      }
+                      const uint64_t product_id =
+                          std::stoull(req.matches[1].str());
+                      std::string error;
+                      if (!cart_service.Remove(user->id, product_id, &error))
+                      {
+                          ErrorResponse(res, 500, "db_error", error);
+                          return;
+                      }
+                      std::optional<std::vector<CartItem>> items =
+                          cart_service.Get(user->id, &error);
+                      if (!items.has_value())
+                      {
+                          ErrorResponse(res, 500, "db_error", error);
+                          return;
+                      }
+                      JsonResponse(res, 200, CartJson(*items));
+                  });
+
+    server.Post("/api/v1/orders",
+                [&auth, &order_service](const httplib::Request& req,
+                                        httplib::Response& res) {
+                    std::optional<User> user = RequireUser(req, res, auth);
+                    if (!user.has_value())
+                    {
+                        return;
+                    }
+                    const std::string idempotency_key =
+                        req.get_header_value("Idempotency-Key");
+                    const CheckoutResult result =
+                        order_service.Checkout(user->id, idempotency_key);
+                    res.status = result.http_status;
+                    res.set_content(result.body, "application/json");
+                });
+
+    server.Get("/api/v1/orders",
+               [&auth, &order_service](const httplib::Request& req,
+                                       httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth);
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+                   int limit = 20;
+                   int offset = 0;
+                   try
+                   {
+                       const std::string limit_param =
+                           req.get_param_value("limit");
+                       const std::string offset_param =
+                           req.get_param_value("offset");
+                       if (!limit_param.empty())
+                       {
+                           limit = std::stoi(limit_param);
+                       }
+                       if (!offset_param.empty())
+                       {
+                           offset = std::stoi(offset_param);
+                       }
+                   }
+                   catch (...)
+                   {
+                       ErrorResponse(res, 400, "invalid_argument",
+                                     "invalid limit or offset");
+                       return;
+                   }
+
+                   std::string error;
+                   std::optional<std::vector<OrderView>> orders =
+                       order_service.List(user->id, limit, offset, &error);
+                   if (!orders.has_value())
+                   {
+                       ErrorResponse(res, 500, "db_error", error);
+                       return;
+                   }
+                   nlohmann::json body;
+                   body["orders"] = nlohmann::json::array();
+                   for (const OrderView& order : *orders)
+                   {
+                       body["orders"].push_back(OrderToJson(order));
+                   }
+                   body["limit"] = limit;
+                   body["offset"] = offset;
+                   JsonResponse(res, 200, body);
+               });
+
+    server.Get(R"(/api/v1/orders/([A-Za-z0-9]+))",
+               [&auth, &order_service](const httplib::Request& req,
+                                       httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth);
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+                   const bool is_ops =
+                       user->role == "ops" || user->role == "admin";
+                   std::string error;
+                   std::optional<OrderView> order = order_service.Get(
+                       user->id, req.matches[1].str(), is_ops, &error);
+                   if (!order.has_value())
+                   {
+                       ErrorResponse(res, 404, "not_found", error);
+                       return;
+                   }
+                   JsonResponse(res, 200, OrderToJson(*order));
+               });
+
+    server.Post(R"(/api/v1/orders/([A-Za-z0-9]+)/pay)",
+                [&auth, &order_service](const httplib::Request& req,
+                                        httplib::Response& res) {
+                    std::optional<User> user = RequireUser(req, res, auth);
+                    if (!user.has_value())
+                    {
+                        return;
+                    }
+                    const std::string order_no = req.matches[1].str();
+                    int http_status = 500;
+                    std::string error;
+                    if (!order_service.Pay(
+                            user->id, order_no, &error, &http_status))
+                    {
+                        ErrorResponse(res, http_status, "order_error", error);
+                        return;
+                    }
+                    nlohmann::json body;
+                    body["order_no"] = order_no;
+                    body["status"] = "paid";
+                    JsonResponse(res, 200, body);
+                });
+
+    server.Post(R"(/api/v1/orders/([A-Za-z0-9]+)/cancel)",
+                [&auth, &order_service](const httplib::Request& req,
+                                        httplib::Response& res) {
+                    std::optional<User> user = RequireUser(req, res, auth);
+                    if (!user.has_value())
+                    {
+                        return;
+                    }
+                    const std::string order_no = req.matches[1].str();
+                    int http_status = 500;
+                    std::string error;
+                    if (!order_service.Cancel(
+                            user->id, order_no, &error, &http_status))
+                    {
+                        ErrorResponse(res, http_status, "order_error", error);
+                        return;
+                    }
+                    nlohmann::json body;
+                    body["order_no"] = order_no;
+                    body["status"] = "cancelled";
+                    JsonResponse(res, 200, body);
+                });
+
+    server.Get("/api/v1/ops/config",
+               [&auth, &config_service](const httplib::Request& req,
+                                        httplib::Response& res) {
+                   if (!RequireUser(req, res, auth, "ops").has_value())
+                   {
+                       return;
+                   }
+
+                   const std::string key = req.get_param_value("key");
+                   if (!key.empty())
+                   {
+                       std::string error;
+                       const auto value = config_service.GetLatest(key, &error);
+                       if (!value.has_value())
+                       {
+                           ErrorResponse(res, 503, "config_unavailable", error);
+                           return;
+                       }
+                       nlohmann::json body;
+                       body["key"] = key;
+                       body["value"] = value->first;
+                       body["applied_index"] = value->second;
+                       JsonResponse(res, 200, body);
+                       return;
+                   }
+
+                   const ConfigSnapshot snapshot = config_service.Snapshot();
+                   nlohmann::json body;
+                   body["age_ms"] = snapshot.age_ms;
+                   body["stale"] = snapshot.stale;
+                   body["connected"] = snapshot.connected;
+                   body["keys"] = nlohmann::json::object();
+                   for (const auto& [name, value] : snapshot.values)
+                   {
+                       body["keys"][name] = value;
+                   }
+                   JsonResponse(res, 200, body);
+               });
+
     server.Post("/api/v1/ops/catalog/categories",
                 [&auth, &catalog](const httplib::Request& req,
                                   httplib::Response& res) {
@@ -942,6 +1350,7 @@ int main(int argc, char** argv)
 
     const bool listening = server.listen(config.http_host.c_str(),
                                          config.http_port);
+    config_service.Stop();
     mysql_library_end();
     return listening ? 0 : 1;
 }

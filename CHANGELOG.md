@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.2.0 — Cart, Checkout and the Config Plane
+
+### Added
+
+- Cart API: view, add, update quantity, remove; stock-aware quantity cap.
+- Checkout transaction: per-cart lock, conditional stock decrement, order +
+  order items + payment insert, cart clear, all in one MySQL transaction.
+- Promotions evaluated from the CairnKV config snapshot: percent / fixed,
+  threshold, priority, time window; the chosen rule is stored on the order as
+  `promo_snapshot` together with `config_version`.
+- Idempotent checkout: `Idempotency-Key` is inserted in the same transaction;
+  a replay returns the stored status and body, no duplicate order.
+- Mock payment (`POST /api/v1/orders/:order_no/pay`) and cancellation with
+  stock restoration.
+- Order list and detail endpoints with ownership checks.
+- CairnKV config plane: vendored v1.0.1 client, multi-seed connection,
+  500 ms stale-cache refresh, linearizable ops reads, `seed-config`, and
+  fail-closed `503 CONFIG_STALE` / `checkout_disabled`.
+- `scripts/w7-smoke.sh` covering cart → checkout → idempotency → pay → list →
+  admin config read.
+
+### Validation
+
+- `ctest`: 1/1 (crypto, validation, promo).
+- W7 smoke: subtotal 12900 → discount 1290 → total 11610; same
+  `Idempotency-Key` returns the same `order_no`; payment moves the order to
+  `paid`; admin reads 4 config keys with `stale=false`.
+- Fail-closed: disabling `cairnshop/flags/checkout_enabled` returns
+  `503 checkout_disabled`; re-enabling restores checkout.
+
+### Known limits
+
+- SQL parameters are still escaped with `mysql_real_escape_string`; prepared
+  statements remain in the hardening backlog.
+- Config writes, version history and rollback are not exposed yet (W8).
+- Order list returns order headers; detail returns items.
+- No frontend, rate limiting, metrics endpoint, or CI yet.
+
 ## v0.1.2 — Plain Product README
 
 ### Changed
