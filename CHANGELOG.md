@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.2 — Plain Product README
+
+### Changed
+
+- README rewritten in a plain product voice. Removed the "not a demo" /
+  "first real consumer" framing and the defensive rationale around CairnKV.
+  The document now starts with what CairnShop is, followed by features,
+  architecture, data split, quick start, API, security, validation, project
+  structure, documents, and roadmap.
+
+No code, API, or schema changes.
+
 ## v0.1.1 — Documentation
 
 ### Changed

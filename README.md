@@ -1,28 +1,30 @@
 # CairnShop
 
-A feature-flag and promotion driven e-commerce platform, built as the first
-real consumer of [CairnKV](https://github.com/Ethan-y-Free/CairnKV).
+An e-commerce platform with a storefront and an operations console.
 
-**v0.1.0** — backend foundation: authentication, roles, catalog, migrations
-and seed data.
+**v0.1.1** — authentication, roles, catalog, migrations and seed data.
 
----
+## 功能
 
-## 定位
+CairnShop 包含两部分：
 
-CairnShop 是一个**真实产物级**的电商平台，不是 demo：登录 / 角色 / 会话、
-商品目录、购物车、下单、库存事务、促销、幂等、模拟支付、运营台、审计、
-限流、可观测、CI、压测都会落地。
+- **商城前台**：注册登录、商品浏览、购物车、下单、订单查询。
+- **运营控制台**：商品与库存、促销规则、特性开关、订单、审计、配置版本与回滚。
 
-范围刻意受控：
+功能状态：
 
-- 不接真实支付 / 物流 / 发票，不做微服务 / K8s / 多地域；
-- 单实例后端 + MySQL 8 + 3 节点 CairnKV + Nginx + Docker Compose；
-- 前端一个 Vue3 SPA，两套布局：`/` 商城、`/ops` 运营台。
-
-它的另一个身份是 **CairnKV 的第一个真实消费者**：通过固定 tag 依赖
-`libcairnkv`，用真实验收（下单、故障演练、压测）验证一个 Raft KV 中间件
-在业务里的边界，而不是自己写 demo 自证。
+| 模块 | 状态 |
+|---|---|
+| 注册 / 登录 / 会话 / 角色（customer / ops / admin） | 已实现 |
+| 商品目录（分类、列表、详情、运营创建/更新） | 已实现 |
+| MySQL schema 迁移 + 种子数据 | 已实现 |
+| 购物车 | 规划中 |
+| 下单 / 库存事务 / 订单状态机 | 规划中 |
+| 促销 / 特性开关 / 配置版本与回滚 | 规划中 |
+| 幂等下单 / 模拟支付 | 规划中 |
+| 运营台（审计、配置历史、集群状态） | 规划中 |
+| Vue3 商城 + 运营前端 | 规划中 |
+| Docker Compose / CI / e2e / 压测 | 规划中 |
 
 ## 架构
 
@@ -41,39 +43,32 @@ Browser (Vue3 SPA: 商城 / 运营台)
        │                │
        ▼                ▼
    MySQL 8          libcairnkv ──▶ CairnKV ×3
-   交易面             规则面
+   业务数据           配置数据
 ```
 
-- **后端**：C++20 模块化单体；`cpp-httplib` + `nlohmann/json`，无自研
-  HTTP/框架层。
-- **交易面 MySQL**：用户、会话、商品、库存、购物车、订单、支付、审计；
-  库存扣减与下单在同一个事务里完成。
-- **规则面 CairnKV**：feature flags、促销规则、全局结算开关、配置版本 /
-  历史 / 回滚；小数据、读多写少、必须强一致。
-- **配置消费**：后端每 500ms 用 `kStale` 刷新配置缓存；下单只读缓存；
-  运营台"读最新"走 `kLinearizable`；缓存超过 30s 未刷新时下单 fail closed
-  （`503 CONFIG_STALE`），宁可不卖，不按错误价格卖。
-- **订单快照**：订单行保存 `promo_snapshot` + `config_version`，可回放
-  "下单当时用的是哪一版规则"。
+- **后端**：C++20 模块化单体；HTTP 使用 `cpp-httplib`，JSON 使用
+  `nlohmann/json`。
+- **MySQL 8**：用户、会话、商品、库存、购物车、订单、支付、审计。
+- **CairnKV**：独立的 Raft KV 仓库；CairnShop 通过 `libcairnkv` 固定 tag
+  依赖，存放 feature flags、促销规则、全局结算配置及其版本历史。
+- **部署**：Nginx + 后端 + MySQL + 3 节点 CairnKV，Docker Compose 编排。
 
-> 为什么业务主数据不放进 CairnKV：它当前没有 CAS / 多 key 事务 / TTL，
-> 纯 KV 的并发读改写无法保证 0 超卖。交易数据留在 MySQL；CairnKV 专注
-> 它最擅长的强一致规则面。
+## 数据划分
 
-## 功能状态
+| 数据 | 存储 | 说明 |
+|---|---|---|
+| 用户、会话、商品、库存、购物车、订单、支付、审计 | MySQL 8 | 需要事务、索引、分页、库存扣减 |
+| feature flags、促销规则、全局结算配置、配置版本/历史 | CairnKV | 数据量小、读多写少、需要线性一致读 |
+| 下单时的规则快照 | MySQL `orders` 列 | `promo_snapshot` + `config_version`，可回放 |
 
-| 模块 | 状态 |
-|---|---|
-| 注册 / 登录 / 会话 / 角色（customer / ops / admin） | ✅ v0.1.0 |
-| 商品目录（分类、商品列表、详情、运营创建/更新） | ✅ v0.1.0 |
-| MySQL schema 迁移 + 种子数据 | ✅ v0.1.0 |
-| 购物车 | 规划中 |
-| 下单 / 库存事务 / 订单状态机 | 规划中 |
-| 促销计算 / 特性开关 / 配置版本与回滚（CairnKV） | 规划中 |
-| 幂等下单 / 模拟支付 | 规划中 |
-| 运营台（审计、配置历史、集群状态） | 规划中 |
-| Vue3 商城 + 运营前端 | 规划中 |
-| Docker Compose / CI / e2e / 压测 | 规划中 |
+CairnKV 的 API 是 Put / Get / Scan / Delete，没有 CAS、多 key 事务和 TTL，
+因此库存扣减和订单事务放在 MySQL；CairnKV 只存配置。
+
+配置读取：
+
+- 后端每 500ms 用 `kStale` 刷新配置缓存，下单只读缓存；
+- 运营台“读最新”使用 `kLinearizable`；
+- 缓存超过 30s 未刷新时，下单返回 `503 CONFIG_STALE`，避免使用过期规则。
 
 ## 快速开始
 
@@ -185,14 +180,15 @@ docs/                        设计 / 发布说明
 
 ## 文档
 
-- [产品与范围草案](PRODUCT-draft-v1.md)：用户旅程、数据分工、API、验收标准
+- [产品与范围草案](PRODUCT-draft-v1.md)：用户旅程、数据划分、API、验收标准
 - [v0.1.0 release notes](docs/releases/v0.1.0.md)
+- [v0.1.1 release notes](docs/releases/v0.1.1.md)
 - [CHANGELOG](CHANGELOG.md)
 
 ## Roadmap
 
 - 购物车、下单、库存事务、订单状态机。
-- 促销、特性开关、配置版本 / 回滚（CairnKV 规则面）。
+- 促销、特性开关、配置版本 / 回滚。
 - 幂等下单与模拟支付。
 - 运营台：审计、配置历史、CairnKV 集群状态。
 - Vue3 商城 + 运营前端。
