@@ -1,7 +1,7 @@
 # Build CairnKV from a local source directory (no GitHub access needed).
 # Usage:
 #   docker build -f deploy/Dockerfile.cairnkv.local \
-#     -t cairnshop-cairnkv:v1.0.1 "$CAIRNKV_SRC"
+#     -t cairnshop-cairnkv:v1.0.0 "$CAIRNKV_SRC"
 
 FROM ubuntu:24.04 AS build
 

@@ -12,12 +12,12 @@ x-backend: &backend
     - internal
 
 x-cairnkv: &cairnkv
-  image: cairnshop-cairnkv:${CAIRNKV_TAG:-v1.0.1}
+  image: cairnshop-cairnkv:${CAIRNKV_TAG:-v1.0.0}
   build:
     context: ..
     dockerfile: deploy/Dockerfile.cairnkv
     args:
-      CAIRNKV_TAG: ${CAIRNKV_TAG:-v1.0.1}
+      CAIRNKV_TAG: ${CAIRNKV_TAG:-v1.0.0}
   restart: unless-stopped
   networks:
     - internal

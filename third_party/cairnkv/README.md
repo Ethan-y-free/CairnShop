@@ -1,6 +1,6 @@
 # CairnKV client (vendored)
 
-Copied from https://github.com/Ethan-y-Free/CairnKV at tag **v1.0.1**.
+Copied from https://github.com/Ethan-y-Free/CairnKV at tag **v1.0.0**.
 
 Only the client-side sources are included:
 

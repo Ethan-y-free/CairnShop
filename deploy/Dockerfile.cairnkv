@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG CAIRNKV_REPO=https://github.com/Ethan-y-Free/CairnKV.git
-ARG CAIRNKV_TAG=v1.0.1
+ARG CAIRNKV_TAG=v1.0.0
 
 RUN git clone --depth 1 --branch "${CAIRNKV_TAG}" "${CAIRNKV_REPO}" /src
 WORKDIR /src

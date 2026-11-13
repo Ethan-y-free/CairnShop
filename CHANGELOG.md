@@ -128,7 +128,7 @@
 - Mock payment (`POST /api/v1/orders/:order_no/pay`) and cancellation with
   stock restoration.
 - Order list and detail endpoints with ownership checks.
-- CairnKV config plane: vendored v1.0.1 client, multi-seed connection,
+- CairnKV config plane: vendored v1.0.0 client, multi-seed connection,
   500 ms stale-cache refresh, linearizable ops reads, `seed-config`, and
   fail-closed `503 CONFIG_STALE` / `checkout_disabled`.
 - `scripts/w7-smoke.sh` covering cart → checkout → idempotency → pay → list →

@@ -58,7 +58,7 @@ docker compose --profile vps --env-file .env.production \
   -f deploy/docker-compose.prod.yml build
 ```
 
-`deploy/Dockerfile.cairnkv` clones `CairnKV v1.0.1` from GitHub. If the build
+`deploy/Dockerfile.cairnkv` clones `CairnKV v1.0.0` from GitHub. If the build
 host cannot reach GitHub, build the images from a local CairnKV checkout:
 
 ```bash

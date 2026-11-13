@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CAIRNKV_SRC="${CAIRNKV_SRC:-}"
 VERSION="${VERSION:-v0.2.0}"
-CAIRNKV_TAG="${CAIRNKV_TAG:-v1.0.1}"
+CAIRNKV_TAG="${CAIRNKV_TAG:-v1.0.0}"
 
 if [ -z "$CAIRNKV_SRC" ] || [ ! -d "$CAIRNKV_SRC" ]; then
     echo "set CAIRNKV_SRC to the CairnKV source directory" >&2
