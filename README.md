@@ -1,59 +1,96 @@
 # CairnShop
 
-特性开关 / 促销驱动的电商平台：前台商城 + 运营控制台。
+A feature-flag and promotion driven e-commerce platform, built as the first
+real consumer of [CairnKV](https://github.com/Ethan-y-Free/CairnKV).
 
-- 后端：C++20 模块化单体（`cpp-httplib` + `nlohmann/json` + MySQL 8 + OpenSSL）
-- 前端：Vue 3 + Vite + Element Plus + Pinia（W8 起）
-- 配置：CairnKV 强一致配置（W7 起接入 `CairnKV v1.0.0`）
-- 部署：Nginx + Docker Compose（W9）
+**v0.1.0** — backend foundation: authentication, roles, catalog, migrations
+and seed data.
 
-当前进度：**W6 — 仓库、迁移、种子、登录/会话/角色、商品目录**。
+---
 
-## 数据分工（架构 A，2026/11/13 拍板）
+## 定位
+
+CairnShop 是一个**真实产物级**的电商平台，不是 demo：登录 / 角色 / 会话、
+商品目录、购物车、下单、库存事务、促销、幂等、模拟支付、运营台、审计、
+限流、可观测、CI、压测都会落地。
+
+范围刻意受控：
+
+- 不接真实支付 / 物流 / 发票，不做微服务 / K8s / 多地域；
+- 单实例后端 + MySQL 8 + 3 节点 CairnKV + Nginx + Docker Compose；
+- 前端一个 Vue3 SPA，两套布局：`/` 商城、`/ops` 运营台。
+
+它的另一个身份是 **CairnKV 的第一个真实消费者**：通过固定 tag 依赖
+`libcairnkv`，用真实验收（下单、故障演练、压测）验证一个 Raft KV 中间件
+在业务里的边界，而不是自己写 demo 自证。
+
+## 架构
 
 ```
-Browser (Vue3 SPA)
-        │
+Browser (Vue3 SPA: 商城 / 运营台)
+        │ HTTPS
+        ▼
       Nginx
-        │
-CairnShop backend (C++20)
-   ├── MySQL 8     用户 / 会话 / 商品 / 库存 / 订单 / 支付 / 审计   （交易面）
-   └── libcairnkv ──▶ CairnKV ×3
-                     flags / promos / global / 配置版本与历史       （规则面）
+        │ /api
+        ▼
+┌──────────────────────────────┐
+│ CairnShop backend (C++20)    │  模块化单体
+│  api / auth / catalog        │
+│  cart / order / promotion    │
+└──────┬────────────────┬──────┘
+       │                │
+       ▼                ▼
+   MySQL 8          libcairnkv ──▶ CairnKV ×3
+   交易面             规则面
 ```
 
-- **MySQL 记"发生了什么"**：交易事实，需要事务、索引、库存扣减、分页。
-- **CairnKV 记"现在的规则是什么"**：开关、促销、全局结算配置、配置版本/历史/回滚；小数据、读多写少、必须强一致。
-- 订单行保存 `promo_snapshot` + `config_version`，可回放"下单当时用的是哪版规则"。
-- 不把业务主数据放进 CairnKV：它没有 CAS/多 key 事务/TTL，纯 KV 做库存扣减无法保证 0 超卖。若未来要让它当主存储，先加 CAS + 多 key 事务 + snapshot（CairnKV v1.1）。
+- **后端**：C++20 模块化单体；`cpp-httplib` + `nlohmann/json`，无自研
+  HTTP/框架层。
+- **交易面 MySQL**：用户、会话、商品、库存、购物车、订单、支付、审计；
+  库存扣减与下单在同一个事务里完成。
+- **规则面 CairnKV**：feature flags、促销规则、全局结算开关、配置版本 /
+  历史 / 回滚；小数据、读多写少、必须强一致。
+- **配置消费**：后端每 500ms 用 `kStale` 刷新配置缓存；下单只读缓存；
+  运营台"读最新"走 `kLinearizable`；缓存超过 30s 未刷新时下单 fail closed
+  （`503 CONFIG_STALE`），宁可不卖，不按错误价格卖。
+- **订单快照**：订单行保存 `promo_snapshot` + `config_version`，可回放
+  "下单当时用的是哪一版规则"。
 
-可演示的 CairnKV 行为（W7/W8 落地）：
+> 为什么业务主数据不放进 CairnKV：它当前没有 CAS / 多 key 事务 / TTL，
+> 纯 KV 的并发读改写无法保证 0 超卖。交易数据留在 MySQL；CairnKV 专注
+> 它最擅长的强一致规则面。
 
-1. 运营台关闭"结算开关" → 全站 ≤1s 生效，下单返回维护提示；
-2. 修改/回滚促销规则 → 新订单使用新版本，旧订单保留快照；
-3. kill CairnKV leader → 选主 ≤2s，配置缓存继续服务，下单 0 失败；
-4. 配置缓存超过 30s 未刷新 → 下单 `503 CONFIG_STALE`（fail closed）。
+## 功能状态
 
-## 目录
+| 模块 | 状态 |
+|---|---|
+| 注册 / 登录 / 会话 / 角色（customer / ops / admin） | ✅ v0.1.0 |
+| 商品目录（分类、商品列表、详情、运营创建/更新） | ✅ v0.1.0 |
+| MySQL schema 迁移 + 种子数据 | ✅ v0.1.0 |
+| 购物车 | 规划中 |
+| 下单 / 库存事务 / 订单状态机 | 规划中 |
+| 促销计算 / 特性开关 / 配置版本与回滚（CairnKV） | 规划中 |
+| 幂等下单 / 模拟支付 | 规划中 |
+| 运营台（审计、配置历史、集群状态） | 规划中 |
+| Vue3 商城 + 运营前端 | 规划中 |
+| Docker Compose / CI / e2e / 压测 | 规划中 |
 
-```
-backend/            C++20 后端（api / auth / catalog / mysql / crypto）
-db/migrations/      schema 迁移（按文件名排序）
-third_party/        vendored httplib.h + nlohmann/json.hpp
-deploy/             docker compose（W6 只有 MySQL）
-docs/               设计 / 运维 / 演示文档（逐步补齐）
-```
+## 快速开始
 
-## 依赖（Ubuntu 24.04）
+依赖（Ubuntu 24.04）：
 
 ```bash
 sudo apt install build-essential cmake libmysqlclient-dev libssl-dev libgtest-dev
-sudo apt install mysql-server   # 或用 deploy/docker-compose.dev.yml 起 MySQL
+sudo apt install mysql-server
 ```
 
-`cpp-httplib` 与 `nlohmann/json` 已 vendor 在 `third_party/`，不需要联网拉依赖。
+或只用容器起 MySQL：
 
-## 数据库
+```bash
+docker compose -f deploy/docker-compose.dev.yml up -d
+```
+
+建库与账号：
 
 ```sql
 CREATE DATABASE IF NOT EXISTS cairnshop
@@ -63,13 +100,7 @@ GRANT ALL PRIVILEGES ON cairnshop.* TO 'cairnshop'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
-或：
-
-```bash
-docker compose -f deploy/docker-compose.dev.yml up -d
-```
-
-## 构建
+构建与测试：
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -77,10 +108,10 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-## 配置与运行
+迁移、种子、启动：
 
 ```bash
-cp .env.example .env        # 按需修改，真实密钥不要提交
+cp .env.example .env
 set -a
 . ./.env
 set +a
@@ -90,10 +121,8 @@ set +a
 ./build/backend/cairnshop-backend serve
 ```
 
-`seed` 默认创建：
-
-- 管理员 `admin@cairnshop.local / admin123456`（可用 `CAIRNSHOP_ADMIN_*` 覆盖）
-- 3 个分类、6 个商品（`active`）
+`seed` 默认创建管理员 `admin@cairnshop.local / admin123456`（可用
+`CAIRNSHOP_ADMIN_*` 覆盖）、3 个分类、6 个商品。
 
 健康检查：
 
@@ -102,7 +131,7 @@ curl -s localhost:8080/healthz
 curl -s localhost:8080/readyz
 ```
 
-## API（W6）
+## API
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -117,27 +146,55 @@ curl -s localhost:8080/readyz
 | POST | `/api/v1/ops/catalog/products` | 运营：创建商品 |
 | PATCH | `/api/v1/ops/catalog/products/:id` | 运营：更新商品 |
 
-示例：
-
 ```bash
 curl -c /tmp/cairnshop.cookies -H 'Content-Type: application/json' \
   -d '{"email":"alice@example.com","password":"secret123","display_name":"Alice"}' \
   http://localhost:8080/api/v1/auth/register
 
 curl -b /tmp/cairnshop.cookies http://localhost:8080/api/v1/auth/me
-curl -s http://localhost:8080/api/v1/catalog/products?limit=5
+curl -s 'http://localhost:8080/api/v1/catalog/products?limit=5'
 ```
 
-## 安全（W6 已落地）
+## 安全
 
 - 密码 PBKDF2-SHA256（120k 次、16B salt、32B hash），常量时间比较；
 - 会话 32B 随机 token，DB 只存 SHA-256；HttpOnly + SameSite=Lax，7 天过期；
-- 运营接口强制 `ops`/`admin` 角色；
-- 所有 SQL 参数经 `mysql_real_escape_string` 转义；W7 迁移到 prepared statements；
+- 运营接口强制 `ops` / `admin` 角色；
+- SQL 参数统一经转义层处理；prepared statements 在后续加固中；
 - 输入校验：email / password / display_name / slug / 商品状态 / 数值范围。
 
-## 下一步（W7）
+## 验证
 
-- 购物车、下单、库存事务、促销、幂等键、模拟支付；
-- 接入 `CairnKV v1.0.0`（FetchContent 固定 tag）读配置；
-- 把 SQL 访问迁移到 prepared statements。
+- 单元测试：密码哈希、token、输入校验。
+- 集成冒烟：迁移 + 种子 + 健康检查 + 注册 / 登录 / me + 商品列表 +
+  运营创建商品 + customer 访问运营接口返回 403。
+- 后续：订单事务 / 幂等 / 库存并发 / CairnKV 故障演练 / e2e / 压测。
+
+## 工程结构
+
+```
+backend/include/cairnshop/   公共头（config / logging / mysql / crypto / auth / catalog）
+backend/src/                 实现与 HTTP 入口
+backend/tests/               GTest
+db/migrations/               schema 迁移
+deploy/                      docker compose
+frontend/                    Vue3 SPA（占位）
+third_party/                 vendored httplib.h + nlohmann/json.hpp
+docs/                        设计 / 发布说明
+```
+
+## 文档
+
+- [产品与范围草案](PRODUCT-draft-v1.md)：用户旅程、数据分工、API、验收标准
+- [v0.1.0 release notes](docs/releases/v0.1.0.md)
+- [CHANGELOG](CHANGELOG.md)
+
+## Roadmap
+
+- 购物车、下单、库存事务、订单状态机。
+- 促销、特性开关、配置版本 / 回滚（CairnKV 规则面）。
+- 幂等下单与模拟支付。
+- 运营台：审计、配置历史、CairnKV 集群状态。
+- Vue3 商城 + 运营前端。
+- Docker Compose、CI、e2e、压测与故障演练。
+- 工程加固：prepared statements、限流、CSRF、metrics、结构化请求日志。

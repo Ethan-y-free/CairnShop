@@ -1,0 +1,2 @@
+# Vendored single-header dependencies; exclude from GitHub language stats.
+third_party/** linguist-vendored

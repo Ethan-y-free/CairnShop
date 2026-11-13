@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.1 — Documentation
+
+### Changed
+
+- README rewritten as a product introduction: positioning, architecture,
+  data split, feature status, quick start, API, security, validation,
+  project structure, documents, and roadmap. Internal week-by-week planning
+  was removed from the public README and stays in `PRODUCT-draft-v1.md`.
+- `third_party/**` marked `linguist-vendored` so GitHub language statistics
+  reflect CairnShop's own code instead of the vendored single-header
+  dependencies (`httplib.h`, `json.hpp`).
+
+No code, API, or schema changes.
+
 ## v0.1.0 — W6 Backend Skeleton
 
 ### Added
