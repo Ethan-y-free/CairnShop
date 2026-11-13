@@ -1,0 +1,947 @@
+#include <algorithm>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <mysql.h>
+
+#include "httplib.h"
+#include "nlohmann/json.hpp"
+
+#include "cairnshop/auth.h"
+#include "cairnshop/catalog.h"
+#include "cairnshop/config.h"
+#include "cairnshop/crypto.h"
+#include "cairnshop/logging.h"
+#include "cairnshop/mysql.h"
+
+namespace cairnshop
+{
+
+namespace
+{
+
+constexpr const char* kSessionCookie = "cairnshop_session";
+
+nlohmann::json UserJson(const User& user)
+{
+    nlohmann::json body;
+    body["id"] = user.id;
+    body["email"] = user.email;
+    body["display_name"] = user.display_name;
+    body["role"] = user.role;
+    return body;
+}
+
+nlohmann::json CategoryJson(const Category& category)
+{
+    nlohmann::json body;
+    body["id"] = category.id;
+    body["name"] = category.name;
+    body["slug"] = category.slug;
+    return body;
+}
+
+nlohmann::json ProductJson(const Product& product)
+{
+    nlohmann::json body;
+    body["id"] = product.id;
+    body["category_id"] = product.category_id;
+    body["sku"] = product.sku;
+    body["name"] = product.name;
+    body["description"] = product.description;
+    body["price_cents"] = product.price_cents;
+    body["stock"] = product.stock;
+    body["status"] = product.status;
+    return body;
+}
+
+void JsonResponse(httplib::Response& res,
+                  int status,
+                  const nlohmann::json& body)
+{
+    res.status = status;
+    res.set_content(body.dump(), "application/json");
+}
+
+void ErrorResponse(httplib::Response& res,
+                   int status,
+                   const std::string& code,
+                   const std::string& message)
+{
+    nlohmann::json body;
+    body["error"]["code"] = code;
+    body["error"]["message"] = message;
+    JsonResponse(res, status, body);
+}
+
+std::optional<nlohmann::json> ParseBody(const httplib::Request& req,
+                                        httplib::Response& res)
+{
+    nlohmann::json body = nlohmann::json::parse(req.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object())
+    {
+        ErrorResponse(res, 400, "invalid_json", "request body must be a JSON object");
+        return std::nullopt;
+    }
+    return body;
+}
+
+bool GetInt64(const nlohmann::json& body, const char* key, int64_t* out)
+{
+    const auto it = body.find(key);
+    if (it == body.end() || !it->is_number_integer())
+    {
+        return false;
+    }
+    *out = it->get<int64_t>();
+    return true;
+}
+
+std::string GetString(const nlohmann::json& body,
+                      const char* key,
+                      const std::string& fallback = "")
+{
+    const auto it = body.find(key);
+    if (it == body.end() || !it->is_string())
+    {
+        return fallback;
+    }
+    return it->get<std::string>();
+}
+
+std::string GetCookie(const httplib::Request& req, const std::string& name)
+{
+    const auto it = req.headers.find("Cookie");
+    if (it == req.headers.end())
+    {
+        return "";
+    }
+
+    const std::string& cookies = it->second;
+    size_t pos = 0;
+    while (pos < cookies.size())
+    {
+        const size_t end = cookies.find(';', pos);
+        std::string part = cookies.substr(pos, end - pos);
+        while (!part.empty() && part.front() == ' ')
+        {
+            part.erase(part.begin());
+        }
+        const size_t eq = part.find('=');
+        if (eq != std::string::npos)
+        {
+            const std::string key = part.substr(0, eq);
+            if (key == name)
+            {
+                return part.substr(eq + 1);
+            }
+        }
+        if (end == std::string::npos)
+        {
+            break;
+        }
+        pos = end + 1;
+    }
+    return "";
+}
+
+void SetSessionCookie(httplib::Response& res,
+                      const std::string& token,
+                      int ttl_seconds,
+                      bool secure)
+{
+    std::string cookie = std::string(kSessionCookie) + "=" + token +
+                         "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" +
+                         std::to_string(ttl_seconds);
+    if (secure)
+    {
+        cookie += "; Secure";
+    }
+    res.set_header("Set-Cookie", cookie);
+}
+
+void ClearSessionCookie(httplib::Response& res, bool secure)
+{
+    std::string cookie = std::string(kSessionCookie) +
+                         "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
+    if (secure)
+    {
+        cookie += "; Secure";
+    }
+    res.set_header("Set-Cookie", cookie);
+}
+
+std::optional<User> RequireUser(const httplib::Request& req,
+                                httplib::Response& res,
+                                AuthService& auth,
+                                const std::string& required_role = "")
+{
+    const std::string token = GetCookie(req, kSessionCookie);
+    if (token.empty())
+    {
+        ErrorResponse(res, 401, "unauthorized", "login required");
+        return std::nullopt;
+    }
+
+    std::string error;
+    std::optional<User> user = auth.UserFromToken(token, &error);
+    if (!user.has_value())
+    {
+        ErrorResponse(res, 401, "unauthorized", error);
+        return std::nullopt;
+    }
+    if (!required_role.empty() && user->role != required_role &&
+        user->role != "admin")
+    {
+        ErrorResponse(res, 403, "forbidden", "insufficient role");
+        return std::nullopt;
+    }
+    return user;
+}
+
+std::string ReadFile(const std::string& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        return "";
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+bool RunMigrations(MySqlPool& pool, const std::string& directory)
+{
+    std::string error;
+    std::unique_ptr<MySqlLease> lease = pool.Acquire(&error);
+    if (lease == nullptr)
+    {
+        LogError("migrate_acquire", error);
+        return false;
+    }
+    MYSQL* mysql = lease->get();
+
+    if (!Execute(mysql,
+                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                 "version VARCHAR(255) PRIMARY KEY, "
+                 "applied_at DATETIME(6) NOT NULL)",
+                 &error))
+    {
+        LogError("migrate_schema_table", error);
+        return false;
+    }
+
+    std::set<std::string> applied;
+    std::optional<SqlResult> existing =
+        Query(mysql, "SELECT version FROM schema_migrations", &error);
+    if (!existing.has_value())
+    {
+        LogError("migrate_read_versions", error);
+        return false;
+    }
+    for (size_t i = 0; i < existing->size(); ++i)
+    {
+        applied.insert(existing->At(i, 0));
+    }
+
+    std::vector<std::string> files;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, ec))
+    {
+        if (ec)
+        {
+            break;
+        }
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+        if (entry.path().extension() == ".sql")
+        {
+            files.push_back(entry.path().string());
+        }
+    }
+    if (ec)
+    {
+        LogError("migrate_list", ec.message());
+        return false;
+    }
+    std::sort(files.begin(), files.end());
+
+    for (const std::string& file : files)
+    {
+        const std::string version = std::filesystem::path(file).filename().string();
+        if (applied.count(version) != 0)
+        {
+            continue;
+        }
+
+        const std::string sql = ReadFile(file);
+        if (sql.empty())
+        {
+            LogError("migrate_read", file);
+            return false;
+        }
+        if (!Execute(mysql, sql, &error))
+        {
+            LogError("migrate_apply", version + ": " + error);
+            return false;
+        }
+        if (!Execute(mysql,
+                     "INSERT INTO schema_migrations (version, applied_at) "
+                     "VALUES (" +
+                         SqlString(mysql, version) + ", NOW(6))",
+                     &error))
+        {
+            LogError("migrate_record", version + ": " + error);
+            return false;
+        }
+
+        nlohmann::json fields;
+        fields["version"] = version;
+        LogEvent("info", "migration_applied", fields);
+    }
+    return true;
+}
+
+bool InsertSeedProduct(MYSQL* mysql,
+                       const Product& product,
+                       const std::string& error_prefix)
+{
+    std::string error;
+    const std::string sql =
+        "INSERT INTO products (category_id, sku, name, description, "
+        "price_cents, stock, status, created_at, updated_at) VALUES (" +
+        std::to_string(product.category_id) + ", " +
+        SqlString(mysql, product.sku) + ", " + SqlString(mysql, product.name) +
+        ", " + SqlString(mysql, product.description) + ", " +
+        std::to_string(product.price_cents) + ", " +
+        std::to_string(product.stock) + ", 'active', NOW(6), NOW(6)) "
+        "ON DUPLICATE KEY UPDATE name = VALUES(name), "
+        "description = VALUES(description), price_cents = VALUES(price_cents), "
+        "stock = VALUES(stock), status = 'active'";
+    if (!Execute(mysql, sql, &error))
+    {
+        LogError(error_prefix, error);
+        return false;
+    }
+    return true;
+}
+
+bool RunSeed(MySqlPool& pool, const Config& config)
+{
+    std::string error;
+    std::unique_ptr<MySqlLease> lease = pool.Acquire(&error);
+    if (lease == nullptr)
+    {
+        LogError("seed_acquire", error);
+        return false;
+    }
+    MYSQL* mysql = lease->get();
+
+    std::optional<SqlResult> admin = Query(
+        mysql,
+        "SELECT id FROM users WHERE email = " +
+            SqlString(mysql, config.admin_email) + " LIMIT 1",
+        &error);
+    if (!admin.has_value())
+    {
+        LogError("seed_admin_lookup", error);
+        return false;
+    }
+    if (admin->size() == 0)
+    {
+        const std::string password_hash = HashPassword(config.admin_password);
+        if (password_hash.empty())
+        {
+            LogError("seed_admin_hash", "failed to hash admin password");
+            return false;
+        }
+        if (!Execute(mysql,
+                     "INSERT INTO users (email, password_hash, display_name, "
+                     "role) VALUES (" +
+                         SqlString(mysql, config.admin_email) + ", " +
+                         SqlString(mysql, password_hash) +
+                         ", 'CairnShop Admin', 'admin')",
+                     &error))
+        {
+            LogError("seed_admin_insert", error);
+            return false;
+        }
+    }
+
+    struct SeedCategory
+    {
+        const char* name;
+        const char* slug;
+    };
+    const SeedCategory categories[] = {
+        {"Audio", "audio"},
+        {"Home", "home"},
+        {"Outdoor", "outdoor"},
+    };
+    for (const SeedCategory& category : categories)
+    {
+        if (!Execute(mysql,
+                     "INSERT INTO categories (name, slug) VALUES (" +
+                         SqlString(mysql, category.name) + ", " +
+                         SqlString(mysql, category.slug) +
+                         ") ON DUPLICATE KEY UPDATE name = VALUES(name)",
+                     &error))
+        {
+            LogError("seed_category", error);
+            return false;
+        }
+    }
+
+    std::optional<SqlResult> category_rows =
+        Query(mysql, "SELECT id, slug FROM categories", &error);
+    if (!category_rows.has_value())
+    {
+        LogError("seed_category_lookup", error);
+        return false;
+    }
+    std::vector<std::pair<uint64_t, std::string>> category_ids;
+    for (size_t i = 0; i < category_rows->size(); ++i)
+    {
+        category_ids.emplace_back(std::stoull(category_rows->At(i, 0)),
+                                  category_rows->At(i, 1));
+    }
+    auto category_id = [&category_ids](const std::string& slug) -> uint64_t {
+        for (const auto& [id, value] : category_ids)
+        {
+            if (value == slug)
+            {
+                return id;
+            }
+        }
+        return 0;
+    };
+
+    struct SeedProduct
+    {
+        const char* sku;
+        const char* name;
+        const char* description;
+        const char* category;
+        int64_t price_cents;
+        int64_t stock;
+    };
+    const SeedProduct products[] = {
+        {"AUD-001", "Studio Headphones", "Closed-back monitoring headphones",
+         "audio", 12900, 40},
+        {"AUD-002", "Portable Speaker", "Battery-powered speaker", "audio",
+         7900, 60},
+        {"HOME-001", "Desk Lamp", "Warm LED desk lamp", "home", 4500, 100},
+        {"HOME-002", "Ceramic Mug", "350 ml stoneware mug", "home", 1900, 200},
+        {"OUT-001", "Trail Bottle", "Insulated 750 ml bottle", "outdoor", 3900,
+         80},
+        {"OUT-002", "Camp Stool", "Folding aluminum stool", "outdoor", 5900,
+         50},
+    };
+    for (const SeedProduct& seed : products)
+    {
+        Product product;
+        product.category_id = category_id(seed.category);
+        if (product.category_id == 0)
+        {
+            LogError("seed_product_category", seed.category);
+            return false;
+        }
+        product.sku = seed.sku;
+        product.name = seed.name;
+        product.description = seed.description;
+        product.price_cents = seed.price_cents;
+        product.stock = seed.stock;
+        product.status = "active";
+        if (!InsertSeedProduct(mysql, product, "seed_product"))
+        {
+            return false;
+        }
+    }
+
+    LogInfo("seed_completed");
+    return true;
+}
+
+}
+
+}
+
+int main(int argc, char** argv)
+{
+    using namespace cairnshop;
+
+    if (mysql_library_init(0, nullptr, nullptr) != 0)
+    {
+        LogError("mysql_init", "mysql_library_init failed");
+        return 1;
+    }
+
+    const std::string command = argc > 1 ? argv[1] : "serve";
+    const Config config = LoadConfigFromEnv();
+
+    MySqlPool pool(config);
+    std::string error;
+    if (!pool.Initialize(&error))
+    {
+        LogError("mysql_pool", error);
+        mysql_library_end();
+        return 1;
+    }
+
+    if (command == "migrate")
+    {
+        const bool ok = RunMigrations(pool, config.migrations_dir);
+        mysql_library_end();
+        return ok ? 0 : 1;
+    }
+
+    AuthService auth(&pool, config.session_ttl_seconds);
+    CatalogService catalog(&pool);
+
+    if (command == "seed")
+    {
+        const bool ok = RunSeed(pool, config);
+        mysql_library_end();
+        return ok ? 0 : 1;
+    }
+
+    if (command != "serve")
+    {
+        LogError("usage", "usage: cairnshop-backend [serve|migrate|seed]");
+        mysql_library_end();
+        return 1;
+    }
+
+    httplib::Server server;
+
+    server.set_logger([](const httplib::Request& req,
+                         const httplib::Response& res) {
+        nlohmann::json fields;
+        fields["method"] = req.method;
+        fields["path"] = req.path;
+        fields["status"] = res.status;
+        fields["remote_addr"] = req.remote_addr;
+        LogEvent("info", "http_request", fields);
+    });
+
+    server.set_error_handler([](const httplib::Request& req,
+                                httplib::Response& res) {
+        if (!res.body.empty())
+        {
+            return;
+        }
+        const std::string code = res.status == 404 ? "not_found" : "error";
+        ErrorResponse(res, res.status, code, "request failed");
+        (void)req;
+    });
+
+    server.Get("/healthz", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("ok", "text/plain");
+    });
+
+    server.Get("/readyz", [&pool](const httplib::Request&,
+                                  httplib::Response& res) {
+        if (pool.Ping())
+        {
+            res.set_content("ok", "text/plain");
+            return;
+        }
+        res.status = 503;
+        res.set_content("not ready", "text/plain");
+    });
+
+    server.Post("/api/v1/auth/register",
+                [&auth, &config](const httplib::Request& req,
+                                 httplib::Response& res) {
+                    std::optional<nlohmann::json> body = ParseBody(req, res);
+                    if (!body.has_value())
+                    {
+                        return;
+                    }
+                    const std::string email =
+                        GetString(*body, "email");
+                    const std::string password =
+                        GetString(*body, "password");
+                    const std::string display_name =
+                        GetString(*body, "display_name");
+
+                    std::string error;
+                    std::optional<Session> session = auth.Register(
+                        email, password, display_name, &error);
+                    if (!session.has_value())
+                    {
+                        ErrorResponse(res, 400, "register_failed", error);
+                        return;
+                    }
+                    SetSessionCookie(res,
+                                     session->token,
+                                     config.session_ttl_seconds,
+                                     config.cookie_secure);
+                    JsonResponse(res, 201, UserJson(session->user));
+                });
+
+    server.Post("/api/v1/auth/login",
+                [&auth, &config](const httplib::Request& req,
+                                 httplib::Response& res) {
+                    std::optional<nlohmann::json> body = ParseBody(req, res);
+                    if (!body.has_value())
+                    {
+                        return;
+                    }
+                    const std::string email =
+                        GetString(*body, "email");
+                    const std::string password =
+                        GetString(*body, "password");
+
+                    std::string error;
+                    std::optional<Session> session =
+                        auth.Login(email, password, &error);
+                    if (!session.has_value())
+                    {
+                        ErrorResponse(res, 401, "login_failed", error);
+                        return;
+                    }
+                    SetSessionCookie(res,
+                                     session->token,
+                                     config.session_ttl_seconds,
+                                     config.cookie_secure);
+                    JsonResponse(res, 200, UserJson(session->user));
+                });
+
+    server.Post("/api/v1/auth/logout",
+                [&auth, &config](const httplib::Request& req,
+                                 httplib::Response& res) {
+                    const std::string token = GetCookie(req, kSessionCookie);
+                    std::string error;
+                    if (!auth.Logout(token, &error))
+                    {
+                        ErrorResponse(res, 500, "logout_failed", error);
+                        return;
+                    }
+                    ClearSessionCookie(res, config.cookie_secure);
+                    res.status = 204;
+                });
+
+    server.Get("/api/v1/auth/me",
+               [&auth](const httplib::Request& req, httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth);
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+                   JsonResponse(res, 200, UserJson(*user));
+               });
+
+    server.Get("/api/v1/catalog/categories",
+               [&catalog](const httplib::Request&, httplib::Response& res) {
+                   std::string error;
+                   std::optional<std::vector<Category>> categories =
+                       catalog.ListCategories(&error);
+                   if (!categories.has_value())
+                   {
+                       ErrorResponse(res, 500, "catalog_error", error);
+                       return;
+                   }
+                   nlohmann::json body;
+                   body["categories"] = nlohmann::json::array();
+                   for (const Category& category : *categories)
+                   {
+                       body["categories"].push_back(CategoryJson(category));
+                   }
+                   JsonResponse(res, 200, body);
+               });
+
+    server.Get("/api/v1/catalog/products",
+               [&catalog](const httplib::Request& req,
+                          httplib::Response& res) {
+                   std::optional<uint64_t> category_id;
+                   const std::string category_param =
+                       req.get_param_value("category_id");
+                   if (!category_param.empty())
+                   {
+                       try
+                       {
+                           category_id = std::stoull(category_param);
+                       }
+                       catch (...)
+                       {
+                           ErrorResponse(res, 400, "invalid_argument",
+                                         "invalid category_id");
+                           return;
+                       }
+                   }
+
+                   int limit = 20;
+                   int offset = 0;
+                   const std::string limit_param =
+                       req.get_param_value("limit");
+                   const std::string offset_param =
+                       req.get_param_value("offset");
+                   try
+                   {
+                       if (!limit_param.empty())
+                       {
+                           limit = std::stoi(limit_param);
+                       }
+                       if (!offset_param.empty())
+                       {
+                           offset = std::stoi(offset_param);
+                       }
+                   }
+                   catch (...)
+                   {
+                       ErrorResponse(res, 400, "invalid_argument",
+                                     "invalid limit or offset");
+                       return;
+                   }
+
+                   std::string error;
+                   std::optional<std::vector<Product>> products =
+                       catalog.ListProducts(category_id,
+                                            req.get_param_value("q"),
+                                            limit,
+                                            offset,
+                                            &error);
+                   if (!products.has_value())
+                   {
+                       ErrorResponse(res, 500, "catalog_error", error);
+                       return;
+                   }
+                   nlohmann::json body;
+                   body["products"] = nlohmann::json::array();
+                   for (const Product& product : *products)
+                   {
+                       body["products"].push_back(ProductJson(product));
+                   }
+                   body["limit"] = limit;
+                   body["offset"] = offset;
+                   JsonResponse(res, 200, body);
+               });
+
+    server.Get(R"(/api/v1/catalog/products/(\d+))",
+               [&catalog](const httplib::Request& req,
+                          httplib::Response& res) {
+                   const uint64_t id =
+                       std::stoull(req.matches[1].str());
+                   std::string error;
+                   std::optional<Product> product = catalog.GetProduct(id, &error);
+                   if (!product.has_value())
+                   {
+                       ErrorResponse(res, 404, "not_found", error);
+                       return;
+                   }
+                   if (product->status != "active")
+                   {
+                       ErrorResponse(res, 404, "not_found", "product not found");
+                       return;
+                   }
+                   JsonResponse(res, 200, ProductJson(*product));
+               });
+
+    server.Post("/api/v1/ops/catalog/categories",
+                [&auth, &catalog](const httplib::Request& req,
+                                  httplib::Response& res) {
+                    if (!RequireUser(req, res, auth, "ops").has_value())
+                    {
+                        return;
+                    }
+                    std::optional<nlohmann::json> body = ParseBody(req, res);
+                    if (!body.has_value())
+                    {
+                        return;
+                    }
+                    const std::string name =
+                        GetString(*body, "name");
+                    const std::string slug =
+                        GetString(*body, "slug");
+                    if (name.empty() || name.size() > 128 ||
+                        !IsValidSlug(slug))
+                    {
+                        ErrorResponse(res, 400, "invalid_argument",
+                                      "invalid name or slug");
+                        return;
+                    }
+                    uint64_t id = 0;
+                    std::string error;
+                    if (!catalog.CreateCategory(name, slug, &id, &error))
+                    {
+                        ErrorResponse(res, 409, "category_create_failed", error);
+                        return;
+                    }
+                    nlohmann::json response;
+                    response["id"] = id;
+                    response["name"] = name;
+                    response["slug"] = slug;
+                    JsonResponse(res, 201, response);
+                });
+
+    server.Post("/api/v1/ops/catalog/products",
+                [&auth, &catalog](const httplib::Request& req,
+                                  httplib::Response& res) {
+                    if (!RequireUser(req, res, auth, "ops").has_value())
+                    {
+                        return;
+                    }
+                    std::optional<nlohmann::json> body = ParseBody(req, res);
+                    if (!body.has_value())
+                    {
+                        return;
+                    }
+
+                    Product product;
+                    product.sku = GetString(*body, "sku");
+                    product.name = GetString(*body, "name");
+                    product.description =
+                        GetString(*body, "description");
+                    product.status =
+                        GetString(*body, "status", "draft");
+
+                    int64_t category_id = 0;
+                    int64_t price_cents = -1;
+                    int64_t stock = -1;
+                    if (!GetInt64(*body, "category_id", &category_id) ||
+                        !GetInt64(*body, "price_cents", &price_cents) ||
+                        !GetInt64(*body, "stock", &stock))
+                    {
+                        ErrorResponse(res, 400, "invalid_argument",
+                                      "category_id, price_cents and stock "
+                                      "must be integers");
+                        return;
+                    }
+                    if (product.sku.empty() || product.name.empty() ||
+                        category_id <= 0 || price_cents < 0 || stock < 0 ||
+                        !IsValidProductStatus(product.status))
+                    {
+                        ErrorResponse(res, 400, "invalid_argument",
+                                      "invalid product fields");
+                        return;
+                    }
+                    product.category_id = static_cast<uint64_t>(category_id);
+                    product.price_cents = price_cents;
+                    product.stock = stock;
+
+                    std::string error;
+                    uint64_t id = 0;
+                    if (!catalog.CreateProduct(product, &id, &error))
+                    {
+                        ErrorResponse(res, 409, "product_create_failed", error);
+                        return;
+                    }
+                    product.id = id;
+                    JsonResponse(res, 201, ProductJson(product));
+                });
+
+    server.Patch(R"(/api/v1/ops/catalog/products/(\d+))",
+                 [&auth, &catalog](const httplib::Request& req,
+                                   httplib::Response& res) {
+                     if (!RequireUser(req, res, auth, "ops").has_value())
+                     {
+                         return;
+                     }
+                     const uint64_t id = std::stoull(req.matches[1].str());
+
+                     std::string error;
+                     std::optional<Product> existing =
+                         catalog.GetProduct(id, &error);
+                     if (!existing.has_value())
+                     {
+                         ErrorResponse(res, 404, "not_found", error);
+                         return;
+                     }
+
+                     std::optional<nlohmann::json> body = ParseBody(req, res);
+                     if (!body.has_value())
+                     {
+                         return;
+                     }
+
+                     Product product = *existing;
+                     if (body->contains("sku"))
+                     {
+                         product.sku = GetString(*body, "sku");
+                     }
+                     if (body->contains("name"))
+                     {
+                         product.name = GetString(*body, "name");
+                     }
+                     if (body->contains("description"))
+                     {
+                         product.description =
+                             GetString(*body, "description");
+                     }
+                     if (body->contains("status"))
+                     {
+                         product.status =
+                             GetString(*body, "status");
+                     }
+                     int64_t value = 0;
+                     if (body->contains("category_id"))
+                     {
+                         if (!GetInt64(*body, "category_id", &value) ||
+                             value <= 0)
+                         {
+                             ErrorResponse(res, 400, "invalid_argument",
+                                           "invalid category_id");
+                             return;
+                         }
+                         product.category_id = static_cast<uint64_t>(value);
+                     }
+                     if (body->contains("price_cents"))
+                     {
+                         if (!GetInt64(*body, "price_cents", &value) ||
+                             value < 0)
+                         {
+                             ErrorResponse(res, 400, "invalid_argument",
+                                           "invalid price_cents");
+                             return;
+                         }
+                         product.price_cents = value;
+                     }
+                     if (body->contains("stock"))
+                     {
+                         if (!GetInt64(*body, "stock", &value) || value < 0)
+                         {
+                             ErrorResponse(res, 400, "invalid_argument",
+                                           "invalid stock");
+                             return;
+                         }
+                         product.stock = value;
+                     }
+                     if (product.sku.empty() || product.name.empty() ||
+                         !IsValidProductStatus(product.status))
+                     {
+                         ErrorResponse(res, 400, "invalid_argument",
+                                       "invalid product fields");
+                         return;
+                     }
+
+                     if (!catalog.UpdateProduct(product, &error))
+                     {
+                         ErrorResponse(res, 409, "product_update_failed", error);
+                         return;
+                     }
+                     JsonResponse(res, 200, ProductJson(product));
+                 });
+
+    nlohmann::json started;
+    started["port"] = config.http_port;
+    started["mysql_host"] = config.mysql_host;
+    started["mysql_database"] = config.mysql_database;
+    LogEvent("info", "server_started", started);
+
+    const bool listening = server.listen(config.http_host.c_str(),
+                                         config.http_port);
+    mysql_library_end();
+    return listening ? 0 : 1;
+}
