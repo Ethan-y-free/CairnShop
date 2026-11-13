@@ -15,7 +15,9 @@ struct CartItem
     uint64_t product_id = 0;
     std::string sku;
     std::string name;
+    std::string image_url;
     int64_t price_cents = 0;
+    int64_t original_price_cents = 0;
     int64_t stock = 0;
     std::string status;
     int quantity = 0;

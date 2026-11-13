@@ -1,5 +1,6 @@
 #include "cairnshop/auth.h"
 
+#include <string>
 #include <utility>
 
 #include "cairnshop/crypto.h"
@@ -11,13 +12,33 @@ namespace cairnshop
 namespace
 {
 
+std::string Trim(const std::string& value)
+{
+    size_t begin = 0;
+    size_t end = value.size();
+    while (begin < end &&
+           (value[begin] == ' ' || value[begin] == '\t' ||
+            value[begin] == '\n' || value[begin] == '\r'))
+    {
+        ++begin;
+    }
+    while (end > begin &&
+           (value[end - 1] == ' ' || value[end - 1] == '\t' ||
+            value[end - 1] == '\n' || value[end - 1] == '\r'))
+    {
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
 User ReadUser(const SqlResult& result)
 {
     User user;
     user.id = std::stoull(result.At(0, 0));
     user.email = result.At(0, 1);
-    user.display_name = result.At(0, 2);
-    user.role = result.At(0, 3);
+    user.phone = result.At(0, 2);
+    user.display_name = result.At(0, 3);
+    user.role = result.At(0, 4);
     return user;
 }
 
@@ -51,14 +72,28 @@ bool AuthService::CreateSession(MYSQL* mysql,
     return Execute(mysql, sql, error);
 }
 
-std::optional<Session> AuthService::Register(const std::string& email,
+std::optional<Session> AuthService::Register(const std::string& email_input,
+                                             const std::string& phone_input,
                                              const std::string& password,
                                              const std::string& display_name,
                                              std::string* error)
 {
-    if (!IsValidEmail(email))
+    const std::string email = Trim(email_input);
+    const std::string phone = NormalizePhone(phone_input);
+
+    if (email.empty() && phone.empty())
+    {
+        *error = "email or phone is required";
+        return std::nullopt;
+    }
+    if (!email.empty() && !IsValidEmail(email))
     {
         *error = "invalid email";
+        return std::nullopt;
+    }
+    if (!phone.empty() && !IsValidPhone(phone))
+    {
+        *error = "invalid phone number";
         return std::nullopt;
     }
     if (!IsValidPassword(password))
@@ -79,10 +114,23 @@ std::optional<Session> AuthService::Register(const std::string& email,
     }
     MYSQL* mysql = lease->get();
 
+    std::string where;
+    if (!email.empty())
+    {
+        where += "email = " + SqlString(mysql, email);
+    }
+    if (!phone.empty())
+    {
+        if (!where.empty())
+        {
+            where += " OR ";
+        }
+        where += "phone = " + SqlString(mysql, phone);
+    }
+
     std::optional<SqlResult> existing = Query(
         mysql,
-        "SELECT id FROM users WHERE email = " + SqlString(mysql, email) +
-            " LIMIT 1",
+        "SELECT id FROM users WHERE (" + where + ") LIMIT 1",
         error);
     if (!existing.has_value())
     {
@@ -90,7 +138,7 @@ std::optional<Session> AuthService::Register(const std::string& email,
     }
     if (existing->size() > 0)
     {
-        *error = "email already registered";
+        *error = "email or phone already registered";
         return std::nullopt;
     }
 
@@ -101,10 +149,15 @@ std::optional<Session> AuthService::Register(const std::string& email,
         return std::nullopt;
     }
 
+    const std::string email_sql =
+        email.empty() ? "NULL" : SqlString(mysql, email);
+    const std::string phone_sql =
+        phone.empty() ? "NULL" : SqlString(mysql, phone);
     const std::string sql =
-        "INSERT INTO users (email, password_hash, display_name, role) VALUES (" +
-        SqlString(mysql, email) + ", " + SqlString(mysql, password_hash) + ", " +
-        SqlString(mysql, display_name) + ", 'customer')";
+        "INSERT INTO users (email, phone, password_hash, display_name, role) "
+        "VALUES (" +
+        email_sql + ", " + phone_sql + ", " + SqlString(mysql, password_hash) +
+        ", " + SqlString(mysql, display_name) + ", 'customer')";
     if (!Execute(mysql, sql, error))
     {
         return std::nullopt;
@@ -113,6 +166,7 @@ std::optional<Session> AuthService::Register(const std::string& email,
     Session session;
     session.user.id = static_cast<uint64_t>(mysql_insert_id(mysql));
     session.user.email = email;
+    session.user.phone = phone;
     session.user.display_name = display_name;
     session.user.role = "customer";
     if (!CreateSession(mysql, session.user.id, &session.token, error))
@@ -122,13 +176,14 @@ std::optional<Session> AuthService::Register(const std::string& email,
     return session;
 }
 
-std::optional<Session> AuthService::Login(const std::string& email,
+std::optional<Session> AuthService::Login(const std::string& identifier_input,
                                           const std::string& password,
                                           std::string* error)
 {
-    if (!IsValidEmail(email) || password.empty())
+    const std::string identifier = Trim(identifier_input);
+    if (identifier.empty() || password.empty())
     {
-        *error = "invalid email or password";
+        *error = "invalid account or password";
         return std::nullopt;
     }
 
@@ -139,33 +194,49 @@ std::optional<Session> AuthService::Login(const std::string& email,
     }
     MYSQL* mysql = lease->get();
 
+    std::string where;
+    if (identifier.find('@') != std::string::npos)
+    {
+        if (!IsValidEmail(identifier))
+        {
+            *error = "invalid account or password";
+            return std::nullopt;
+        }
+        where = "email = " + SqlString(mysql, identifier);
+    }
+    else
+    {
+        const std::string phone = NormalizePhone(identifier);
+        if (!IsValidPhone(phone))
+        {
+            *error = "invalid account or password";
+            return std::nullopt;
+        }
+        where = "phone = " + SqlString(mysql, phone);
+    }
+
     std::optional<SqlResult> result = Query(
         mysql,
-        "SELECT id, email, display_name, role, password_hash FROM users "
-        "WHERE email = " +
-            SqlString(mysql, email) + " LIMIT 1",
+        "SELECT id, email, phone, display_name, role, password_hash "
+        "FROM users WHERE " +
+            where + " LIMIT 1",
         error);
     if (!result.has_value())
     {
         return std::nullopt;
     }
-    if (result->size() == 0)
+    if (result->size() == 0 || !VerifyPassword(password, result->At(0, 5)))
     {
-        *error = "invalid email or password";
-        return std::nullopt;
-    }
-
-    if (!VerifyPassword(password, result->At(0, 4)))
-    {
-        *error = "invalid email or password";
+        *error = "invalid account or password";
         return std::nullopt;
     }
 
     Session session;
     session.user.id = std::stoull(result->At(0, 0));
     session.user.email = result->At(0, 1);
-    session.user.display_name = result->At(0, 2);
-    session.user.role = result->At(0, 3);
+    session.user.phone = result->At(0, 2);
+    session.user.display_name = result->At(0, 3);
+    session.user.role = result->At(0, 4);
     if (!CreateSession(mysql, session.user.id, &session.token, error))
     {
         return std::nullopt;
@@ -209,7 +280,7 @@ std::optional<User> AuthService::UserFromToken(const std::string& token,
 
     std::optional<SqlResult> result = Query(
         mysql,
-        "SELECT u.id, u.email, u.display_name, u.role FROM sessions s "
+        "SELECT u.id, u.email, u.phone, u.display_name, u.role FROM sessions s "
         "JOIN users u ON u.id = s.user_id WHERE s.token_hash = " +
             SqlString(mysql, Sha256Hex(token)) +
             " AND s.expires_at > NOW(6) LIMIT 1",
@@ -237,7 +308,7 @@ std::optional<User> AuthService::FindUser(uint64_t id, std::string* error)
 
     std::optional<SqlResult> result = Query(
         mysql,
-        "SELECT id, email, display_name, role FROM users WHERE id = " +
+        "SELECT id, email, phone, display_name, role FROM users WHERE id = " +
             std::to_string(id) + " LIMIT 1",
         error);
     if (!result.has_value())

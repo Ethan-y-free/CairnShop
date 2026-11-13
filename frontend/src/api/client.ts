@@ -1,6 +1,7 @@
 export interface User {
     id: number;
     email: string;
+    phone: string;
     display_name: string;
     role: string;
 }
@@ -17,7 +18,10 @@ export interface Product {
     sku: string;
     name: string;
     description: string;
+    image_url: string;
+    detail: string;
     price_cents: number;
+    original_price_cents: number;
     stock: number;
     status: string;
 }
@@ -26,7 +30,9 @@ export interface CartItem {
     product_id: number;
     sku: string;
     name: string;
+    image_url: string;
     price_cents: number;
+    original_price_cents: number;
     stock: number;
     status: string;
     quantity: number;

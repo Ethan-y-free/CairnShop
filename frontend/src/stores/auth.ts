@@ -21,15 +21,19 @@ export const useAuthStore = defineStore('auth', {
                 this.loaded = true;
             }
         },
-        async login(email: string, password: string) {
-            this.user = await api.post<User>('/auth/login', { email, password });
-        },
-        async register(email: string, password: string, displayName: string) {
-            this.user = await api.post<User>('/auth/register', {
-                email,
-                password,
-                display_name: displayName
+        async login(identifier: string, password: string) {
+            this.user = await api.post<User>('/auth/login', {
+                identifier,
+                password
             });
+        },
+        async register(payload: {
+            email?: string;
+            phone?: string;
+            password: string;
+            display_name: string;
+        }) {
+            this.user = await api.post<User>('/auth/register', payload);
         },
         async logout() {
             await api.post('/auth/logout');

@@ -4,6 +4,19 @@
 
 ### Added
 
+- Email or phone registration and login. Phone numbers are normalized to
+  11-digit mainland mobiles; `users.email` is nullable and `users.phone` is
+  unique (migration `0002_phone_and_product_media.sql`).
+- Product media and promotions: `image_url`, `detail`, and
+  `original_price_cents`; 21 seeded products across audio, home, outdoor,
+  digital, and lifestyle. The storefront splits into "双十一狂欢" (sale price
+  with a struck-through original) and "原价好物".
+- Product detail page with a large image, original/sale price, discount tag,
+  detail section, and stock/assurance information.
+- Product-facing hero copy ("双十一提前购 · 全网低价 · 品类齐全") and UI
+  animations: page transitions, card hover/lift, skeleton loading, staggered
+  product entrance, cart badge, responsive layouts.
+- E2E adds phone registration and phone login checks.
 - Rate limiting: login 5/min/IP, register 60/min/IP, checkout 10/min/user,
   ops writes 30/min/user; `429` with `Retry-After`.
 - CSRF protection for unsafe methods: `Origin` must match `Host`.
@@ -23,12 +36,11 @@
 ### Validation
 
 - Backend Debug build; `ctest`.
-- Frontend `npm run build` (1636 modules, Vite 5.4).
-- `scripts/e2e.sh`: **PASS=25 FAIL=0** (health, metrics, register, cart,
-  checkout, idempotency replay, pay, order detail, RBAC, config
-  create/update/history/rollback, audit, fail-closed).
-- `scripts/oversell-test.sh`: **created=10 rejected=5 other=0 stock_left=0**
-  with 15 buyers and 10 units of stock.
+- Frontend `npm run build`.
+- `scripts/e2e.sh` covers health, metrics, email/phone registration and
+  login, cart, checkout, idempotency replay, payment, order detail, RBAC,
+  config create/update/history/rollback, audit, and fail-closed checkout.
+- `scripts/oversell-test.sh` covers 15 buyers competing for 10 units.
 - CI workflow runs on push (Node 22).
 
 ### Known limits

@@ -78,6 +78,20 @@ else
     fail "order paid"
 fi
 
+echo "== phone account =="
+PHONE="139$(date +%s | cut -c3-10)"
+PHONE_COOKIE="$TMP/phone.cookie"
+printf '{"phone":"%s","password":"secret123","display_name":"手机用户"}' \
+    "$PHONE" > "$TMP/phone-reg.json"
+check_eq "phone register" 201 \
+    "$(status -c "$PHONE_COOKIE" -H "$H" -d @"$TMP/phone-reg.json" \
+        "$B/api/v1/auth/register")"
+printf '{"identifier":"%s","password":"secret123"}' "$PHONE" \
+    > "$TMP/phone-login.json"
+check_eq "phone login" 200 \
+    "$(status -c "$PHONE_COOKIE" -H "$H" -d @"$TMP/phone-login.json" \
+        "$B/api/v1/auth/login")"
+
 echo "== rbac =="
 check_eq "customer ops status 403" 403 \
     "$(status -b "$COOKIE" "$B/api/v1/ops/status")"

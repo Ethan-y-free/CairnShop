@@ -129,6 +129,29 @@ a {
     box-shadow: 0 10px 22px rgba(37, 99, 235, 0.28);
 }
 
+.product-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.product-image-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    font-size: 2.6rem;
+    font-weight: 800;
+    color: rgba(37, 99, 235, 0.72);
+}
+
+.product-card:hover .product-image {
+    transform: scale(1.06);
+}
+
 .muted {
     color: var(--muted);
 }

@@ -16,6 +16,12 @@ bool VerifyPassword(const std::string& password, const std::string& stored);
 bool ConstantTimeEquals(const std::string& a, const std::string& b);
 
 bool IsValidEmail(const std::string& email);
+
+// Strips spaces, hyphens and a leading +86/86; stores a mainland 11-digit
+// mobile number.
+std::string NormalizePhone(std::string_view value);
+bool IsValidPhone(const std::string& phone);
+
 bool IsValidPassword(const std::string& password);
 bool IsValidDisplayName(const std::string& name);
 bool IsValidSlug(const std::string& slug);

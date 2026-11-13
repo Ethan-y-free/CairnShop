@@ -13,6 +13,7 @@ struct User
 {
     uint64_t id = 0;
     std::string email;
+    std::string phone;
     std::string display_name;
     std::string role;
 };
@@ -29,10 +30,11 @@ public:
     AuthService(MySqlPool* pool, int session_ttl_seconds);
 
     std::optional<Session> Register(const std::string& email,
+                                    const std::string& phone,
                                     const std::string& password,
                                     const std::string& display_name,
                                     std::string* error);
-    std::optional<Session> Login(const std::string& email,
+    std::optional<Session> Login(const std::string& identifier,
                                  const std::string& password,
                                  std::string* error);
     bool Logout(const std::string& token, std::string* error);

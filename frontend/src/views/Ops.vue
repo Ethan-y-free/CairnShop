@@ -36,7 +36,10 @@ const form = ref({
     sku: '',
     name: '',
     description: '',
+    image_url: '',
+    detail: '',
     price_cents: 0,
+    original_price_cents: 0,
     stock: 0,
     status: 'draft'
 });
@@ -156,7 +159,10 @@ function openCreate() {
         sku: '',
         name: '',
         description: '',
+        image_url: '',
+        detail: '',
         price_cents: 0,
+        original_price_cents: 0,
         stock: 0,
         status: 'draft'
     };
@@ -170,7 +176,10 @@ function openEdit(product: Product) {
         sku: product.sku,
         name: product.name,
         description: product.description,
+        image_url: product.image_url,
+        detail: product.detail,
         price_cents: product.price_cents,
+        original_price_cents: product.original_price_cents,
         stock: product.stock,
         status: product.status
     };
@@ -335,8 +344,20 @@ onMounted(async () => {
                         <el-form-item label="描述">
                             <el-input v-model="form.description" type="textarea" />
                         </el-form-item>
-                        <el-form-item label="价格（分）">
+                        <el-form-item label="详情介绍">
+                            <el-input v-model="form.detail" type="textarea" />
+                        </el-form-item>
+                        <el-form-item label="图片 URL">
+                            <el-input v-model="form.image_url" />
+                        </el-form-item>
+                        <el-form-item label="促销价（分）">
                             <el-input-number v-model="form.price_cents" :min="0" />
+                        </el-form-item>
+                        <el-form-item label="原价（分，0 表示无划线价）">
+                            <el-input-number
+                                v-model="form.original_price_cents"
+                                :min="0"
+                            />
                         </el-form-item>
                         <el-form-item label="库存">
                             <el-input-number v-model="form.stock" :min="0" />

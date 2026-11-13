@@ -46,6 +46,7 @@ nlohmann::json UserJson(const User& user)
     nlohmann::json body;
     body["id"] = user.id;
     body["email"] = user.email;
+    body["phone"] = user.phone;
     body["display_name"] = user.display_name;
     body["role"] = user.role;
     return body;
@@ -68,7 +69,10 @@ nlohmann::json ProductJson(const Product& product)
     body["sku"] = product.sku;
     body["name"] = product.name;
     body["description"] = product.description;
+    body["image_url"] = product.image_url;
+    body["detail"] = product.detail;
     body["price_cents"] = product.price_cents;
+    body["original_price_cents"] = product.original_price_cents;
     body["stock"] = product.stock;
     body["status"] = product.status;
     return body;
@@ -80,7 +84,9 @@ nlohmann::json CartItemJson(const CartItem& item)
     body["product_id"] = item.product_id;
     body["sku"] = item.sku;
     body["name"] = item.name;
+    body["image_url"] = item.image_url;
     body["price_cents"] = item.price_cents;
+    body["original_price_cents"] = item.original_price_cents;
     body["stock"] = item.stock;
     body["status"] = item.status;
     body["quantity"] = item.quantity;
@@ -392,14 +398,44 @@ bool InsertSeedProduct(MYSQL* mysql,
     std::string error;
     // Insert-only: re-running seed must not reset stock, price, status or
     // name of a product an operator has already edited.
+    const std::string original_sql =
+        product.original_price_cents > 0
+            ? std::to_string(product.original_price_cents)
+            : "NULL";
     const std::string sql =
         "INSERT IGNORE INTO products (category_id, sku, name, description, "
-        "price_cents, stock, status, created_at, updated_at) VALUES (" +
+        "image_url, detail, price_cents, original_price_cents, stock, status, "
+        "created_at, updated_at) VALUES (" +
         std::to_string(product.category_id) + ", " +
         SqlString(mysql, product.sku) + ", " + SqlString(mysql, product.name) +
         ", " + SqlString(mysql, product.description) + ", " +
-        std::to_string(product.price_cents) + ", " +
+        SqlString(mysql, product.image_url) + ", " +
+        SqlString(mysql, product.detail) + ", " +
+        std::to_string(product.price_cents) + ", " + original_sql + ", " +
         std::to_string(product.stock) + ", 'active', NOW(6), NOW(6))";
+    if (!Execute(mysql, sql, &error))
+    {
+        LogError(error_prefix, error);
+        return false;
+    }
+    return true;
+}
+
+bool BackfillSeedProductMedia(MYSQL* mysql,
+                              const Product& product,
+                              const std::string& error_prefix)
+{
+    std::string error;
+    const std::string original_sql =
+        product.original_price_cents > 0
+            ? std::to_string(product.original_price_cents)
+            : "NULL";
+    const std::string sql =
+        "UPDATE products SET image_url = " +
+        SqlString(mysql, product.image_url) + ", detail = " +
+        SqlString(mysql, product.detail) + ", original_price_cents = " +
+        original_sql + " WHERE sku = " + SqlString(mysql, product.sku) +
+        " AND (image_url = '' OR image_url IS NULL)";
     if (!Execute(mysql, sql, &error))
     {
         LogError(error_prefix, error);
@@ -459,6 +495,8 @@ bool RunSeed(MySqlPool& pool, const Config& config)
         {"Audio", "audio"},
         {"Home", "home"},
         {"Outdoor", "outdoor"},
+        {"Digital", "digital"},
+        {"Lifestyle", "lifestyle"},
     };
     for (const SeedCategory& category : categories)
     {
@@ -469,6 +507,33 @@ bool RunSeed(MySqlPool& pool, const Config& config)
                      &error))
         {
             LogError("seed_category", error);
+            return false;
+        }
+    }
+
+    struct CategoryRename
+    {
+        const char* slug;
+        const char* legacy_name;
+        const char* name;
+    };
+    const CategoryRename category_renames[] = {
+        {"audio", "Audio", "音频"},
+        {"home", "Home", "家居"},
+        {"outdoor", "Outdoor", "户外"},
+        {"digital", "Digital", "数码"},
+        {"lifestyle", "Lifestyle", "生活"},
+    };
+    for (const CategoryRename& rename : category_renames)
+    {
+        if (!Execute(mysql,
+                     "UPDATE categories SET name = " +
+                         SqlString(mysql, rename.name) + " WHERE slug = " +
+                         SqlString(mysql, rename.slug) + " AND name = " +
+                         SqlString(mysql, rename.legacy_name),
+                     &error))
+        {
+            LogError("seed_category_rename", error);
             return false;
         }
     }
@@ -502,21 +567,77 @@ bool RunSeed(MySqlPool& pool, const Config& config)
         const char* sku;
         const char* name;
         const char* description;
+        const char* detail;
         const char* category;
+        const char* photo;
         int64_t price_cents;
+        int64_t original_price_cents;
         int64_t stock;
     };
     const SeedProduct products[] = {
-        {"AUD-001", "Studio Headphones", "Closed-back monitoring headphones",
-         "audio", 12900, 40},
-        {"AUD-002", "Portable Speaker", "Battery-powered speaker", "audio",
-         7900, 60},
-        {"HOME-001", "Desk Lamp", "Warm LED desk lamp", "home", 4500, 100},
-        {"HOME-002", "Ceramic Mug", "350 ml stoneware mug", "home", 1900, 200},
-        {"OUT-001", "Trail Bottle", "Insulated 750 ml bottle", "outdoor", 3900,
-         80},
-        {"OUT-002", "Camp Stool", "Folding aluminum stool", "outdoor", 5900,
-         50},
+        {"AUD-001", "Studio 头戴耳机", "封闭式监听耳机",
+         "40mm 动圈单元，附可拆线材与收纳包。", "audio",
+         "photo-1505740420928-5e560c06d30e", 12900, 19900, 40},
+        {"AUD-002", "便携蓝牙音箱", "防水户外音箱",
+         "IPX7 防水，12 小时续航，支持双机串联。", "audio",
+         "photo-1608043152269-423dbba4e7e1", 7900, 10900, 60},
+        {"AUD-003", "降噪真无线耳机", "主动降噪入耳式",
+         "混合主动降噪，双设备连接，单次 8 小时续航。", "audio",
+         "photo-1590658268037-6bf12165a8df", 24900, 32900, 35},
+        {"AUD-004", "回音壁音箱", "客厅 2.1 声道",
+         "2.1 声道，蓝牙 / 光纤 / HDMI 输入，附无线低音炮。", "audio",
+         "photo-1545454675-3531b543be5d", 39900, 49900, 20},
+        {"HOME-001", "暖光台灯", "三档色温 LED 台灯",
+         "无频闪，三档色温，触控调光。", "home",
+         "photo-1507473885765-e6ed057f782c", 4500, 6900, 100},
+        {"HOME-002", "陶瓷马克杯", "350ml 手工釉面",
+         "手工釉面，350ml，可微波炉加热。", "home",
+         "photo-1514228742587-6b1558fcca3d", 1900, 2900, 200},
+        {"HOME-003", "空气净化器", "H13 HEPA 滤芯",
+         "适用 30㎡，睡眠模式静音，滤芯可更换。", "home",
+         "photo-1585771724684-38269d6639fd", 89900, 109900, 15},
+        {"HOME-004", "手摇咖啡磨豆机", "粗细可调",
+         "不锈钢磨芯，粗细可调，附收纳袋。", "home",
+         "photo-1517668808822-9ebb02f2a0e6", 15900, 19900, 45},
+        {"HOME-005", "香薰蜡烛套装", "三种香型",
+         "大豆蜡，三种香型，单支燃烧约 30 小时。", "home",
+         "photo-1602874801006-e26c4c5b5e8a", 6900, 0, 120},
+        {"OUT-001", "保温运动水壶", "750ml 保温 24 小时",
+         "316 不锈钢，750ml，保温 24 小时。", "outdoor",
+         "photo-1602143407151-7111542de6e8", 3900, 5900, 80},
+        {"OUT-002", "折叠露营凳", "铝合金轻量",
+         "铝合金折叠结构，承重 120kg，附收纳袋。", "outdoor",
+         "photo-1503602642458-232111445657", 5900, 7900, 50},
+        {"OUT-003", "轻量登山包", "35L 背负系统",
+         "35L 容量，透气背负系统，附防雨罩。", "outdoor",
+         "photo-1553062407-98eeb64c6a62", 29900, 39900, 25},
+        {"OUT-004", "碳纤维登山杖", "三节可调",
+         "碳纤维杖身，三节可调，外锁快拆。", "outdoor",
+         "photo-1551632811-561732d1e306", 12900, 0, 60},
+        {"OUT-005", "充电露营灯", "USB-C 充电",
+         "USB-C 充电，暖光 / 白光两档，续航 20 小时。", "outdoor",
+         "photo-1504851149312-7a075b496cc7", 9900, 12900, 70},
+        {"DIG-001", "机械键盘", "热插拔三模",
+         "75% 配列，热插拔轴体，蓝牙 / 2.4G / 有线三模。", "digital",
+         "photo-1587829741301-dc798b83add3", 45900, 59900, 30},
+        {"DIG-002", "轻量无线鼠标", "58g / 26000 DPI",
+         "58g 轻量机身，26000 DPI，双模连接。", "digital",
+         "photo-1527864550417-7fd91fc51a46", 15900, 19900, 55},
+        {"DIG-003", "4K 网络摄像头", "自动对焦",
+         "4K 30fps，自动对焦，双降噪麦克风。", "digital",
+         "photo-1587826080692-f439cd0b70da", 35900, 0, 40},
+        {"DIG-004", "USB-C 扩展坞", "7 合 1",
+         "7 合 1，HDMI 4K，PD 100W，千兆网口。", "digital",
+         "photo-1625842268584-8f3296236761", 19900, 24900, 90},
+        {"LIFE-001", "防滑瑜伽垫", "6mm 加厚",
+         "TPE 材质，双面防滑，6mm 加厚。", "lifestyle",
+         "photo-1517836357463-d25dfeac3438", 8900, 11900, 75},
+        {"LIFE-002", "保温吸管杯", "500ml",
+         "500ml，附吸管盖，保温 12 小时。", "lifestyle",
+         "photo-1577937927133-66ef06acdf18", 5900, 0, 110},
+        {"LIFE-003", "桌面收纳架", "竹木多层",
+         "竹木材质，多层收纳，适合桌面小物。", "lifestyle",
+         "photo-1493663284031-b7e3aefcae8e", 3900, 0, 130},
     };
     for (const SeedProduct& seed : products)
     {
@@ -530,11 +651,52 @@ bool RunSeed(MySqlPool& pool, const Config& config)
         product.sku = seed.sku;
         product.name = seed.name;
         product.description = seed.description;
+        product.detail = seed.detail;
+        product.image_url =
+            std::string("https://images.unsplash.com/") + seed.photo +
+            "?auto=format&fit=crop&w=900&q=80";
         product.price_cents = seed.price_cents;
+        product.original_price_cents = seed.original_price_cents;
         product.stock = seed.stock;
         product.status = "active";
         if (!InsertSeedProduct(mysql, product, "seed_product"))
         {
+            return false;
+        }
+        if (!BackfillSeedProductMedia(mysql, product, "seed_product_media"))
+        {
+            return false;
+        }
+    }
+
+    // Upgrade the original English seed names on existing databases without
+    // overwriting an operator's edits (only the exact legacy name is matched).
+    struct LegacyProductRename
+    {
+        const char* sku;
+        const char* legacy_name;
+        const char* name;
+        const char* description;
+    };
+    const LegacyProductRename renames[] = {
+        {"AUD-001", "Studio Headphones", "Studio 头戴耳机", "封闭式监听耳机"},
+        {"AUD-002", "Portable Speaker", "便携蓝牙音箱", "防水户外音箱"},
+        {"HOME-001", "Desk Lamp", "暖光台灯", "三档色温 LED 台灯"},
+        {"HOME-002", "Ceramic Mug", "陶瓷马克杯", "350ml 手工釉面"},
+        {"OUT-001", "Trail Bottle", "保温运动水壶", "750ml 保温 24 小时"},
+        {"OUT-002", "Camp Stool", "折叠露营凳", "铝合金轻量"},
+    };
+    for (const LegacyProductRename& rename : renames)
+    {
+        if (!Execute(mysql,
+                     "UPDATE products SET name = " +
+                         SqlString(mysql, rename.name) + ", description = " +
+                         SqlString(mysql, rename.description) +
+                         " WHERE sku = " + SqlString(mysql, rename.sku) +
+                         " AND name = " + SqlString(mysql, rename.legacy_name),
+                     &error))
+        {
+            LogError("seed_product_rename", error);
             return false;
         }
     }
@@ -771,6 +933,8 @@ int main(int argc, char** argv)
                     }
                     const std::string email =
                         GetString(*body, "email");
+                    const std::string phone =
+                        GetString(*body, "phone");
                     const std::string password =
                         GetString(*body, "password");
                     const std::string display_name =
@@ -778,7 +942,7 @@ int main(int argc, char** argv)
 
                     std::string error;
                     std::optional<Session> session = auth.Register(
-                        email, password, display_name, &error);
+                        email, phone, password, display_name, &error);
                     if (!session.has_value())
                     {
                         ErrorResponse(res, 400, "register_failed", error);
@@ -807,14 +971,22 @@ int main(int argc, char** argv)
                     {
                         return;
                     }
-                    const std::string email =
-                        GetString(*body, "email");
+                    std::string identifier =
+                        GetString(*body, "identifier");
+                    if (identifier.empty())
+                    {
+                        identifier = GetString(*body, "email");
+                    }
+                    if (identifier.empty())
+                    {
+                        identifier = GetString(*body, "phone");
+                    }
                     const std::string password =
                         GetString(*body, "password");
 
                     std::string error;
                     std::optional<Session> session =
-                        auth.Login(email, password, &error);
+                        auth.Login(identifier, password, &error);
                     if (!session.has_value())
                     {
                         ErrorResponse(res, 401, "login_failed", error);
@@ -1267,7 +1439,8 @@ int main(int argc, char** argv)
                    std::optional<nlohmann::json> document =
                        config_admin.Update(user->id,
                                            user->role,
-                                           user->email,
+                                           user->email.empty() ? user->phone
+                                                               : user->email,
                                            key,
                                            *value_it,
                                            RequestId(req),
@@ -1347,7 +1520,8 @@ int main(int argc, char** argv)
                     std::optional<nlohmann::json> document =
                         config_admin.Rollback(user->id,
                                               user->role,
-                                              user->email,
+                                              user->email.empty() ? user->phone
+                                                                  : user->email,
                                               key,
                                               static_cast<uint64_t>(version),
                                               RequestId(req),
@@ -1691,12 +1865,15 @@ int main(int argc, char** argv)
                     product.name = GetString(*body, "name");
                     product.description =
                         GetString(*body, "description");
+                    product.image_url = GetString(*body, "image_url");
+                    product.detail = GetString(*body, "detail");
                     product.status =
                         GetString(*body, "status", "draft");
 
                     int64_t category_id = 0;
                     int64_t price_cents = -1;
                     int64_t stock = -1;
+                    int64_t original_price_cents = 0;
                     if (!GetInt64(*body, "category_id", &category_id) ||
                         !GetInt64(*body, "price_cents", &price_cents) ||
                         !GetInt64(*body, "stock", &stock))
@@ -1706,8 +1883,18 @@ int main(int argc, char** argv)
                                       "must be integers");
                         return;
                     }
+                    if (!GetInt64(*body,
+                                  "original_price_cents",
+                                  &original_price_cents))
+                    {
+                        original_price_cents = 0;
+                    }
                     if (product.sku.empty() || product.name.empty() ||
                         category_id <= 0 || price_cents < 0 || stock < 0 ||
+                        original_price_cents < 0 ||
+                        (original_price_cents > 0 &&
+                         original_price_cents <= price_cents) ||
+                        product.image_url.size() > 512 ||
                         !IsValidProductStatus(product.status))
                     {
                         ErrorResponse(res, 400, "invalid_argument",
@@ -1716,6 +1903,7 @@ int main(int argc, char** argv)
                     }
                     product.category_id = static_cast<uint64_t>(category_id);
                     product.price_cents = price_cents;
+                    product.original_price_cents = original_price_cents;
                     product.stock = stock;
 
                     std::string error;
@@ -1794,6 +1982,14 @@ int main(int argc, char** argv)
                          product.description =
                              GetString(*body, "description");
                      }
+                     if (body->contains("image_url"))
+                     {
+                         product.image_url = GetString(*body, "image_url");
+                     }
+                     if (body->contains("detail"))
+                     {
+                         product.detail = GetString(*body, "detail");
+                     }
                      if (body->contains("status"))
                      {
                          product.status =
@@ -1832,7 +2028,21 @@ int main(int argc, char** argv)
                          }
                          product.stock = value;
                      }
+                     if (body->contains("original_price_cents"))
+                     {
+                         if (!GetInt64(*body, "original_price_cents", &value) ||
+                             value < 0)
+                         {
+                             ErrorResponse(res, 400, "invalid_argument",
+                                           "invalid original_price_cents");
+                             return;
+                         }
+                         product.original_price_cents = value;
+                     }
                      if (product.sku.empty() || product.name.empty() ||
+                         product.image_url.size() > 512 ||
+                         (product.original_price_cents > 0 &&
+                          product.original_price_cents <= product.price_cents) ||
                          !IsValidProductStatus(product.status))
                      {
                          ErrorResponse(res, 400, "invalid_argument",

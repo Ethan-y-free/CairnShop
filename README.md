@@ -17,8 +17,8 @@ CairnShop 包含两部分：
 
 | 模块 | 状态 |
 |---|---|
-| 注册 / 登录 / 会话 / 角色（customer / ops / admin） | 已实现 |
-| 商品目录（分类、列表、详情、运营创建/更新） | 已实现 |
+| 注册 / 登录（邮箱或手机号）/ 会话 / 角色（customer / ops / admin） | 已实现 |
+| 商品目录（分类、列表、详情、图片、原价/双十一价、运营创建/更新） | 已实现 |
 | MySQL schema 迁移 + 种子数据 | 已实现 |
 | 购物车 | 已实现 |
 | 下单 / 库存事务 / 订单状态机（pending → paid / cancelled） | 已实现 |
@@ -167,8 +167,8 @@ npm run build               # 产物在 frontend/dist/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/v1/auth/register` | 注册并建立会话 |
-| POST | `/api/v1/auth/login` | 登录，写 HttpOnly cookie |
+| POST | `/api/v1/auth/register` | 注册（`email` 或 `phone`）并建立会话 |
+| POST | `/api/v1/auth/login` | 登录（`identifier` = 邮箱或手机号），写 HttpOnly cookie |
 | POST | `/api/v1/auth/logout` | 注销当前会话 |
 | GET | `/api/v1/auth/me` | 当前用户 |
 | GET | `/api/v1/catalog/categories` | 分类列表 |

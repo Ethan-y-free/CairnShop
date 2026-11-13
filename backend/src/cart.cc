@@ -82,9 +82,9 @@ std::optional<std::vector<CartItem>> CartService::Get(uint64_t user_id,
 
     std::optional<SqlResult> result = Query(
         mysql,
-        "SELECT ci.product_id, p.sku, p.name, p.price_cents, p.stock, "
-        "p.status, ci.quantity FROM cart_items ci "
-        "JOIN products p ON p.id = ci.product_id "
+        "SELECT ci.product_id, p.sku, p.name, p.image_url, p.price_cents, "
+        "p.original_price_cents, p.stock, p.status, ci.quantity "
+        "FROM cart_items ci JOIN products p ON p.id = ci.product_id "
         "WHERE ci.cart_id = " +
             std::to_string(cart_id) + " ORDER BY ci.id",
         error);
@@ -101,10 +101,14 @@ std::optional<std::vector<CartItem>> CartService::Get(uint64_t user_id,
         item.product_id = std::stoull(result->At(row, 0));
         item.sku = result->At(row, 1);
         item.name = result->At(row, 2);
-        item.price_cents = std::stoll(result->At(row, 3));
-        item.stock = std::stoll(result->At(row, 4));
-        item.status = result->At(row, 5);
-        item.quantity = std::stoi(result->At(row, 6));
+        item.image_url = result->At(row, 3);
+        item.price_cents = std::stoll(result->At(row, 4));
+        const std::string original = result->At(row, 5);
+        item.original_price_cents =
+            original.empty() ? 0 : std::stoll(original);
+        item.stock = std::stoll(result->At(row, 6));
+        item.status = result->At(row, 7);
+        item.quantity = std::stoi(result->At(row, 8));
         items.push_back(std::move(item));
     }
     return items;

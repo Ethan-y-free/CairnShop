@@ -24,7 +24,11 @@ struct Product
     std::string sku;
     std::string name;
     std::string description;
+    std::string image_url;
+    std::string detail;
     int64_t price_cents = 0;
+    // 0 means "no struck-through original price".
+    int64_t original_price_cents = 0;
     int64_t stock = 0;
     std::string status = "draft";
 };

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { api, type Product, formatCents } from '../api/client';
 import { useAuthStore } from '../stores/auth';
 import { useCartStore } from '../stores/cart';
+import ProductImage from '../components/ProductImage.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -15,6 +16,16 @@ const product = ref<Product | null>(null);
 const quantity = ref(1);
 const loading = ref(true);
 const adding = ref(false);
+
+const discount = computed(() => {
+    const item = product.value;
+    if (!item || item.original_price_cents <= item.price_cents) {
+        return 0;
+    }
+    return Math.round(
+        (1 - item.price_cents / item.original_price_cents) * 100
+    );
+});
 
 async function load() {
     try {
@@ -60,14 +71,28 @@ onMounted(load);
         <el-page-header content="商品详情" @back="router.back()" />
         <div v-if="product" class="detail fade-up">
             <div class="visual">
-                <span>{{ product.name.slice(0, 1) }}</span>
+                <ProductImage
+                    :src="product.image_url"
+                    :alt="product.name"
+                    :label="product.name"
+                />
                 <em v-if="product.stock <= 5" class="low">库存紧张</em>
             </div>
             <div class="info">
-                <el-tag effect="plain" round>{{ product.sku }}</el-tag>
+                <div class="tags">
+                    <el-tag effect="plain" round>{{ product.sku }}</el-tag>
+                    <el-tag v-if="discount > 0" type="danger" round effect="dark">
+                        双十一 -{{ discount }}%
+                    </el-tag>
+                </div>
                 <h1>{{ product.name }}</h1>
                 <p class="muted">{{ product.description }}</p>
-                <div class="price">{{ formatCents(product.price_cents) }}</div>
+                <div class="price-row">
+                    <span class="price">{{ formatCents(product.price_cents) }}</span>
+                    <s v-if="discount > 0" class="original">
+                        {{ formatCents(product.original_price_cents) }}
+                    </s>
+                </div>
                 <p class="meta muted">
                     库存 {{ product.stock }} · 分类 #{{ product.category_id }}
                 </p>
@@ -84,18 +109,31 @@ onMounted(load);
                         :disabled="product.stock <= 0"
                         @click="add"
                     >
-                        加入购物车
+                        {{ product.stock <= 0 ? '已售罄' : '加入购物车' }}
                     </el-button>
+                </div>
+                <div class="assurance muted">
+                    正品保障 · 7 天无理由 · 满 99 包邮
                 </div>
             </div>
         </div>
+
+        <section v-if="product" class="detail-section fade-up">
+            <h2>商品详情</h2>
+            <p>{{ product.detail }}</p>
+            <ul>
+                <li>商品编号：{{ product.sku }}</li>
+                <li>当前库存：{{ product.stock }} 件</li>
+                <li>双十一期间下单，按促销规则自动计算优惠。</li>
+            </ul>
+        </section>
     </div>
 </template>
 
 <style scoped>
 .detail {
     display: grid;
-    grid-template-columns: minmax(240px, 360px) 1fr;
+    grid-template-columns: minmax(260px, 420px) 1fr;
     gap: 2rem;
     margin-top: 1.25rem;
     padding: 1.5rem;
@@ -107,30 +145,10 @@ onMounted(load);
 
 .visual {
     position: relative;
-    min-height: 260px;
+    min-height: 320px;
     border-radius: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: linear-gradient(135deg, rgba(37, 99, 235, 0.16), rgba(124, 58, 237, 0.22));
     overflow: hidden;
-}
-
-.visual span {
-    font-size: 5rem;
-    font-weight: 800;
-    color: rgba(37, 99, 235, 0.7);
-    animation: float 4s ease-in-out infinite;
-}
-
-@keyframes float {
-    0%,
-    100% {
-        transform: translateY(0);
-    }
-    50% {
-        transform: translateY(-8px);
-    }
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(124, 58, 237, 0.18));
 }
 
 .low {
@@ -141,8 +159,14 @@ onMounted(load);
     font-size: 0.75rem;
     padding: 0.2rem 0.6rem;
     border-radius: 999px;
-    background: rgba(220, 38, 38, 0.12);
-    color: var(--danger);
+    background: rgba(15, 23, 42, 0.72);
+    color: #fff;
+}
+
+.tags {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
 }
 
 h1 {
@@ -150,9 +174,23 @@ h1 {
     letter-spacing: -0.03em;
 }
 
-.price {
-    font-size: 1.8rem;
+.price-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
     margin: 1rem 0 0.3rem;
+}
+
+.price {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--danger);
+    letter-spacing: -0.04em;
+}
+
+.original {
+    color: var(--muted);
+    font-size: 1rem;
 }
 
 .meta {
@@ -163,6 +201,35 @@ h1 {
     display: flex;
     gap: 0.8rem;
     align-items: center;
+}
+
+.assurance {
+    margin-top: 1.2rem;
+    font-size: 0.85rem;
+}
+
+.detail-section {
+    margin-top: 1.25rem;
+    padding: 1.5rem;
+    border-radius: 20px;
+    background: #fff;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+}
+
+.detail-section h2 {
+    margin: 0 0 0.8rem;
+    letter-spacing: -0.03em;
+}
+
+.detail-section p {
+    line-height: 1.8;
+}
+
+.detail-section ul {
+    color: var(--muted);
+    line-height: 1.9;
+    padding-left: 1.2rem;
 }
 
 @media (max-width: 720px) {

@@ -230,6 +230,46 @@ bool IsValidEmail(const std::string& email)
     return true;
 }
 
+std::string NormalizePhone(std::string_view value)
+{
+    std::string out;
+    out.reserve(value.size());
+    for (const char c : value)
+    {
+        if (c == ' ' || c == '-' || c == '(' || c == ')' || c == '+')
+        {
+            continue;
+        }
+        out.push_back(c);
+    }
+    if (out.size() == 13 && out.rfind("86", 0) == 0)
+    {
+        out.erase(0, 2);
+    }
+    return out;
+}
+
+bool IsValidPhone(const std::string& phone)
+{
+    const std::string value = NormalizePhone(phone);
+    if (value.size() != 11)
+    {
+        return false;
+    }
+    if (value[0] != '1' || value[1] < '3' || value[1] > '9')
+    {
+        return false;
+    }
+    for (const char c : value)
+    {
+        if (c < '0' || c > '9')
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool IsValidPassword(const std::string& password)
 {
     return password.size() >= 8 && password.size() <= 128;

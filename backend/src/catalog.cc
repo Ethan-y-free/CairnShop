@@ -11,6 +11,15 @@ namespace
 
 constexpr int kMaxLimit = 100;
 
+int64_t ParseOptionalCents(const std::string& value)
+{
+    if (value.empty())
+    {
+        return 0;
+    }
+    return std::stoll(value);
+}
+
 Product ReadProduct(const SqlResult& result)
 {
     Product product;
@@ -19,14 +28,18 @@ Product ReadProduct(const SqlResult& result)
     product.sku = result.At(0, 2);
     product.name = result.At(0, 3);
     product.description = result.At(0, 4);
-    product.price_cents = std::stoll(result.At(0, 5));
-    product.stock = std::stoll(result.At(0, 6));
-    product.status = result.At(0, 7);
+    product.image_url = result.At(0, 5);
+    product.detail = result.At(0, 6);
+    product.price_cents = std::stoll(result.At(0, 7));
+    product.original_price_cents = ParseOptionalCents(result.At(0, 8));
+    product.stock = std::stoll(result.At(0, 9));
+    product.status = result.At(0, 10);
     return product;
 }
 
 constexpr const char* kProductColumns =
-    "id, category_id, sku, name, description, price_cents, stock, status";
+    "id, category_id, sku, name, description, image_url, detail, "
+    "price_cents, original_price_cents, stock, status";
 
 }
 
@@ -128,9 +141,12 @@ std::optional<std::vector<Product>> CatalogService::ListProducts(
         product.sku = result->At(row, 2);
         product.name = result->At(row, 3);
         product.description = result->At(row, 4);
-        product.price_cents = std::stoll(result->At(row, 5));
-        product.stock = std::stoll(result->At(row, 6));
-        product.status = result->At(row, 7);
+        product.image_url = result->At(row, 5);
+        product.detail = result->At(row, 6);
+        product.price_cents = std::stoll(result->At(row, 7));
+        product.original_price_cents = ParseOptionalCents(result->At(row, 8));
+        product.stock = std::stoll(result->At(row, 9));
+        product.status = result->At(row, 10);
         products.push_back(std::move(product));
     }
     return products;
@@ -199,13 +215,20 @@ bool CatalogService::CreateProduct(const Product& product,
     }
     MYSQL* mysql = lease->get();
 
+    const std::string original_sql =
+        product.original_price_cents > 0
+            ? std::to_string(product.original_price_cents)
+            : "NULL";
     const std::string sql =
         "INSERT INTO products (category_id, sku, name, description, "
-        "price_cents, stock, status, created_at, updated_at) VALUES (" +
+        "image_url, detail, price_cents, original_price_cents, stock, status, "
+        "created_at, updated_at) VALUES (" +
         std::to_string(product.category_id) + ", " +
         SqlString(mysql, product.sku) + ", " + SqlString(mysql, product.name) +
         ", " + SqlString(mysql, product.description) + ", " +
-        std::to_string(product.price_cents) + ", " +
+        SqlString(mysql, product.image_url) + ", " +
+        SqlString(mysql, product.detail) + ", " +
+        std::to_string(product.price_cents) + ", " + original_sql + ", " +
         std::to_string(product.stock) + ", " + SqlString(mysql, product.status) +
         ", NOW(6), NOW(6))";
     if (!Execute(mysql, sql, error))
@@ -228,15 +251,21 @@ bool CatalogService::UpdateProduct(const Product& product, std::string* error)
     }
     MYSQL* mysql = lease->get();
 
+    const std::string original_sql =
+        product.original_price_cents > 0
+            ? std::to_string(product.original_price_cents)
+            : "NULL";
     const std::string sql =
         "UPDATE products SET category_id = " +
         std::to_string(product.category_id) + ", sku = " +
         SqlString(mysql, product.sku) + ", name = " +
         SqlString(mysql, product.name) + ", description = " +
-        SqlString(mysql, product.description) + ", price_cents = " +
-        std::to_string(product.price_cents) + ", stock = " +
-        std::to_string(product.stock) + ", status = " +
-        SqlString(mysql, product.status) +
+        SqlString(mysql, product.description) + ", image_url = " +
+        SqlString(mysql, product.image_url) + ", detail = " +
+        SqlString(mysql, product.detail) + ", price_cents = " +
+        std::to_string(product.price_cents) + ", original_price_cents = " +
+        original_sql + ", stock = " + std::to_string(product.stock) +
+        ", status = " + SqlString(mysql, product.status) +
         ", updated_at = NOW(6) WHERE id = " + std::to_string(product.id);
     return Execute(mysql, sql, error);
 }

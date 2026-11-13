@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { api, type Cart, type CartItem, type Order, formatCents } from '../api/client';
 import { useCartStore } from '../stores/cart';
+import ProductImage from '../components/ProductImage.vue';
 
 const router = useRouter();
 const cartStore = useCartStore();
@@ -106,7 +107,13 @@ onMounted(load);
                         :key="item.product_id"
                         class="item card-hover"
                     >
-                        <div class="thumb">{{ item.name.slice(0, 1) }}</div>
+                        <div class="thumb">
+                            <ProductImage
+                                :src="item.image_url"
+                                :alt="item.name"
+                                :label="item.name"
+                            />
+                        </div>
                         <div class="info">
                             <div class="name">{{ item.name }}</div>
                             <div class="muted">{{ item.sku }}</div>
@@ -209,11 +216,7 @@ h1 {
     width: 56px;
     height: 56px;
     border-radius: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 800;
-    color: var(--primary);
+    overflow: hidden;
     background: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(124, 58, 237, 0.18));
 }
 
