@@ -368,17 +368,16 @@ bool InsertSeedProduct(MYSQL* mysql,
                        const std::string& error_prefix)
 {
     std::string error;
+    // Insert-only: re-running seed must not reset stock, price, status or
+    // name of a product an operator has already edited.
     const std::string sql =
-        "INSERT INTO products (category_id, sku, name, description, "
+        "INSERT IGNORE INTO products (category_id, sku, name, description, "
         "price_cents, stock, status, created_at, updated_at) VALUES (" +
         std::to_string(product.category_id) + ", " +
         SqlString(mysql, product.sku) + ", " + SqlString(mysql, product.name) +
         ", " + SqlString(mysql, product.description) + ", " +
         std::to_string(product.price_cents) + ", " +
-        std::to_string(product.stock) + ", 'active', NOW(6), NOW(6)) "
-        "ON DUPLICATE KEY UPDATE name = VALUES(name), "
-        "description = VALUES(description), price_cents = VALUES(price_cents), "
-        "stock = VALUES(stock), status = 'active'";
+        std::to_string(product.stock) + ", 'active', NOW(6), NOW(6))";
     if (!Execute(mysql, sql, &error))
     {
         LogError(error_prefix, error);
@@ -442,10 +441,9 @@ bool RunSeed(MySqlPool& pool, const Config& config)
     for (const SeedCategory& category : categories)
     {
         if (!Execute(mysql,
-                     "INSERT INTO categories (name, slug) VALUES (" +
+                     "INSERT IGNORE INTO categories (name, slug) VALUES (" +
                          SqlString(mysql, category.name) + ", " +
-                         SqlString(mysql, category.slug) +
-                         ") ON DUPLICATE KEY UPDATE name = VALUES(name)",
+                         SqlString(mysql, category.slug) + ")",
                      &error))
         {
             LogError("seed_category", error);

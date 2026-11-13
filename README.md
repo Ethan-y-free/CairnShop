@@ -134,6 +134,18 @@ curl -s localhost:8080/healthz
 curl -s localhost:8080/readyz
 ```
 
+### 一键启停（VS 远程开发目录）
+
+```bash
+./scripts/dev-up.sh       # MySQL + CairnKV + migrate/seed + backend + frontend
+./scripts/dev-status.sh   # 看各服务状态和访问地址
+./scripts/dev-down.sh     # 停 frontend/backend/CairnKV，MySQL 保留
+```
+
+脚本会自动找 `~/.vs/cairnshop/*/out/build/Linux-GCC-Debug` 和
+`~/.vs/cairnkv/*/...`；也可以显式传 `BUILD=`、`KSRC=`、`KBUILD=`。
+没有执行权限时用 `bash scripts/dev-up.sh`。
+
 ### 前端
 
 需要 Node 18+：

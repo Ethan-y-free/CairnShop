@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.3.1 — Developer Scripts and Non-Destructive Seed
+
+### Added
+
+- `scripts/dev-up.sh`, `dev-down.sh`, `dev-status.sh` for the VS remote
+  development environment. `dev-up` starts MySQL, CairnKV, migrations, seed,
+  config seed, backend, and frontend; `dev-down` stops frontend/backend and
+  keeps MySQL and CairnKV by default (`STOP_CAIRNKV=1` stops CairnKV too).
+- README quick start for the dev scripts.
+
+### Changed
+
+- `seed` is insert-only: categories and products use `INSERT IGNORE`, so
+  re-running it no longer resets price, stock, status, or name of rows an
+  operator has edited.
+- `dev-up.sh` uses local development defaults (`127.0.0.1`, `cairnshop`
+  user/password) and optionally sources `$SRC/.env`; it never sources the
+  production env file with Docker service names.
+
+### Validation
+
+- Dev scripts exercised on the VM: `dev-up` / `dev-status` start the full
+  stack; `dev-down` leaves MySQL and CairnKV running.
+- The seed change is a backend rebuild away; run the normal build + `ctest`.
+
 ## v0.3.0 — Operations API and Vue3 Console
 
 ### Added
