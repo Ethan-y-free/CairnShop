@@ -2,8 +2,9 @@
 
 An e-commerce platform with a storefront and an operations console.
 
-**v0.2.0** — authentication, cart, checkout, promotions, idempotency, mock
-payment, and the CairnKV config plane.
+**v0.3.0** — authentication, catalog, cart, checkout, promotions,
+idempotency, mock payment, the CairnKV config plane, the operations API, and
+the Vue3 storefront + operations console.
 
 ## 功能
 
@@ -22,11 +23,11 @@ CairnShop 包含两部分：
 | 购物车 | 已实现 |
 | 下单 / 库存事务 / 订单状态机（pending → paid / cancelled） | 已实现 |
 | 促销 / 特性开关 / 配置读取（CairnKV） | 已实现 |
-| 配置版本 / 历史 / 回滚 | 规划中 |
+| 配置版本 / 历史 / 回滚 | 已实现 |
 | 幂等下单 / 模拟支付 | 已实现 |
-| 运营台（审计、配置历史、集群状态） | 规划中 |
-| Vue3 商城 + 运营前端 | 规划中 |
-| Docker Compose / CI / e2e / 压测 | 规划中 |
+| 运营台（配置 / 商品 / 审计 / CairnKV 状态） | 已实现 |
+| Vue3 商城 + 运营前端 | 已实现 |
+| Docker Compose / CI / e2e / 压测 | 规划中（Compose/Dockerfile 已提供） |
 
 ## 架构
 
@@ -133,6 +134,22 @@ curl -s localhost:8080/healthz
 curl -s localhost:8080/readyz
 ```
 
+### 前端
+
+需要 Node 18+：
+
+```bash
+cd frontend
+npm install                 # 国内可先执行 npm config set registry https://registry.npmmirror.com
+npm run dev                 # http://<vm-ip>:5173，/api 代理到 127.0.0.1:8080
+```
+
+生产构建：
+
+```bash
+npm run build               # 产物在 frontend/dist/
+```
+
 ## API
 
 | 方法 | 路径 | 说明 |
@@ -157,6 +174,12 @@ curl -s localhost:8080/readyz
 | POST | `/api/v1/orders/:order_no/pay` | 模拟支付 |
 | POST | `/api/v1/orders/:order_no/cancel` | 取消订单并回补库存 |
 | GET | `/api/v1/ops/config` | 运营读配置（`?key=` 为线性一致读） |
+| PUT | `/api/v1/ops/config` | 运营写配置（版本 +1，追加历史） |
+| GET | `/api/v1/ops/config/history` | 配置版本历史 |
+| POST | `/api/v1/ops/config/rollback` | 回滚到指定版本 |
+| GET | `/api/v1/ops/audit` | 审计日志 |
+| GET | `/api/v1/ops/status` | MySQL / CairnKV / 配置缓存状态 |
+| GET | `/api/v1/ops/catalog/products` | 运营商品列表（含 draft/archived） |
 
 ```bash
 curl -c /tmp/cairnshop.cookies -H 'Content-Type: application/json' \
@@ -182,6 +205,8 @@ curl -s 'http://localhost:8080/api/v1/catalog/products?limit=5'
   运营创建商品 + customer 访问运营接口返回 403。
 - W7 冒烟：`bash scripts/w7-smoke.sh` 覆盖购物车 → 下单 → 幂等重放 →
   支付 → 订单列表 → 运营读配置；关闭 `checkout_enabled` 时下单返回 503。
+- W8：前端 `npm run build`；运营台配置保存 → 版本 +1 → 历史出现旧版本 →
+  回滚生效；审计记录写入；状态页显示 MySQL / CairnKV / 配置缓存。
 - 后续：库存并发测试 / CairnKV 故障演练 / e2e / 压测。
 
 ## 工程结构
@@ -206,7 +231,6 @@ docs/                        设计 / 发布说明
 
 ## Roadmap
 
-- 运营台：商品 / 促销管理、审计、配置版本 / 历史 / 回滚、CairnKV 集群状态。
-- Vue3 商城 + 运营前端。
-- Docker Compose、CI、e2e、压测与故障演练。
+- Docker Compose 生产部署收尾（TLS / Cloudflare Tunnel / 备份）。
+- GitHub Actions CI、e2e、压测与 CairnKV 故障演练。
 - 工程加固：prepared statements、限流、CSRF、metrics、结构化请求日志。

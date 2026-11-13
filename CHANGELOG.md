@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.3.0 — Operations API and Vue3 Console
+
+### Added
+
+- Versioned configuration writes to CairnKV: MySQL `GET_LOCK`
+  serialization, `history[≤20]`, `version + 1`, `updated_by` /
+  `updated_at`, and rollback to a previous version.
+- Audit log service; config writes and ops catalog writes are recorded and
+  exposed through `GET /api/v1/ops/audit`.
+- Ops status endpoint: MySQL health, CairnKV cluster role/term/commit/WAL,
+  config cache age and staleness.
+- Ops product list including `draft` and `archived` products.
+- Vue3 SPA: storefront (catalog, auth, cart, checkout, orders) and an
+  operations console (config editor/history/rollback, products, audit,
+  status). Element Plus + Pinia + Vue Router, `/api` relative in production.
+- Production deployment scaffolding: backend/CairnKV/Nginx Dockerfiles,
+  Compose profiles for VPS TLS and Cloudflare Tunnel, and `docs/DEPLOY.md`.
+
+### Validation
+
+- Backend: Linux Debug build; `ctest`.
+- Frontend: `npm run build` (Vite 5.4, 1633 modules; JS 1.08 MB / CSS
+  365 KB gzip 355/49 KB; the chunk-size warning is W9 cleanup).
+- Storefront: login -> cart -> checkout with promo -> pay -> order list.
+- Ops console: config save -> version increments, history shows the old
+  version, rollback restores it, audit rows appear, status page shows
+  MySQL / CairnKV / config cache.
+
+### Known limits
+
+- Prepared statements, rate limiting, CSRF, metrics, CI, e2e and load tests
+  remain W9 work.
+- Deployment scaffolding has not yet been exercised on a public host.
+- Nginx currently serves the placeholder page; wiring `frontend/dist` into the
+  production image is part of W9.
+
 ## v0.2.0 — Cart, Checkout and the Config Plane
 
 ### Added

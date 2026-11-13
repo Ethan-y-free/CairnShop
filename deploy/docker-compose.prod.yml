@@ -1,0 +1,231 @@
+name: cairnshop
+
+x-backend: &backend
+  image: cairnshop-backend:${CAIRNSHOP_VERSION:-dev}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.backend
+  env_file:
+    - ${CAIRNSHOP_ENV_FILE:-../.env.production}
+  restart: unless-stopped
+  networks:
+    - internal
+
+x-cairnkv: &cairnkv
+  image: cairnshop-cairnkv:${CAIRNKV_TAG:-v1.0.1}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.cairnkv
+    args:
+      CAIRNKV_TAG: ${CAIRNKV_TAG:-v1.0.1}
+  restart: unless-stopped
+  networks:
+    - internal
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-cairnshop}
+      MYSQL_USER: ${MYSQL_USER:-cairnshop}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks:
+      - internal
+
+  cairnkv-1:
+    <<: *cairnkv
+    command:
+      - --id
+      - cairnkv-1
+      - --listen
+      - 0.0.0.0:6666
+      - --data-dir
+      - /data
+      - --peers
+      - cairnkv-2=cairnkv-2:6666,cairnkv-3=cairnkv-3:6666
+    volumes:
+      - cairnkv-1-data:/data
+    healthcheck: &cairnkv-health
+      test:
+        - CMD-SHELL
+        - cairnctl --addr 127.0.0.1:6666 status >/dev/null 2>&1
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  cairnkv-2:
+    <<: *cairnkv
+    command:
+      - --id
+      - cairnkv-2
+      - --listen
+      - 0.0.0.0:6666
+      - --data-dir
+      - /data
+      - --peers
+      - cairnkv-1=cairnkv-1:6666,cairnkv-3=cairnkv-3:6666
+    volumes:
+      - cairnkv-2-data:/data
+    healthcheck: *cairnkv-health
+
+  cairnkv-3:
+    <<: *cairnkv
+    command:
+      - --id
+      - cairnkv-3
+      - --listen
+      - 0.0.0.0:6666
+      - --data-dir
+      - /data
+      - --peers
+      - cairnkv-1=cairnkv-1:6666,cairnkv-2=cairnkv-2:6666
+    volumes:
+      - cairnkv-3-data:/data
+    healthcheck: *cairnkv-health
+
+  migrate:
+    <<: *backend
+    command: ["migrate"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  seed:
+    <<: *backend
+    command: ["seed"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  seed-config:
+    <<: *backend
+    command: ["seed-config"]
+    depends_on:
+      cairnkv-1:
+        condition: service_healthy
+      cairnkv-2:
+        condition: service_healthy
+      cairnkv-3:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    <<: *backend
+    command: ["serve"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+      seed-config:
+        condition: service_completed_successfully
+      cairnkv-1:
+        condition: service_healthy
+      cairnkv-2:
+        condition: service_healthy
+      cairnkv-3:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1:8080/healthz >/dev/null
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  nginx:
+    image: cairnshop-nginx:${CAIRNSHOP_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    profiles: ["vps"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot-www:/var/www/certbot:ro
+      - certbot-etc:/etc/letsencrypt:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - internal
+
+  certbot:
+    image: certbot/certbot
+    profiles: ["vps"]
+    volumes:
+      - certbot-www:/var/www/certbot
+      - certbot-etc:/etc/letsencrypt
+    networks:
+      - internal
+
+  # Home/VM deployment: Cloudflare Tunnel terminates TLS; Nginx stays HTTP on
+  # the internal network. Use --profile tunnel-quick (ephemeral URL) or
+  # --profile tunnel-named (token from the Cloudflare Zero Trust dashboard).
+  nginx-tunnel:
+    image: cairnshop-nginx-tunnel:${CAIRNSHOP_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile.tunnel
+    profiles: ["tunnel-quick", "tunnel-named"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - internal
+
+  cloudflared-quick:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --url http://nginx-tunnel:80
+    profiles: ["tunnel-quick"]
+    depends_on:
+      nginx-tunnel:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - internal
+
+  cloudflared-named:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    profiles: ["tunnel-named"]
+    depends_on:
+      nginx-tunnel:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - internal
+
+volumes:
+  mysql-data:
+  cairnkv-1-data:
+  cairnkv-2-data:
+  cairnkv-3-data:
+  certbot-www:
+  certbot-etc:
+
+networks:
+  internal:
+    driver: bridge

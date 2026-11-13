@@ -71,7 +71,8 @@ std::optional<std::vector<Product>> CatalogService::ListProducts(
     const std::string& query,
     int limit,
     int offset,
-    std::string* error)
+    std::string* error,
+    bool only_active)
 {
     if (limit <= 0)
     {
@@ -95,7 +96,11 @@ std::optional<std::vector<Product>> CatalogService::ListProducts(
 
     std::string sql = "SELECT ";
     sql += kProductColumns;
-    sql += " FROM products WHERE status = 'active'";
+    sql += " FROM products WHERE 1 = 1";
+    if (only_active)
+    {
+        sql += " AND status = 'active'";
+    }
     if (category_id.has_value())
     {
         sql += " AND category_id = " + std::to_string(*category_id);

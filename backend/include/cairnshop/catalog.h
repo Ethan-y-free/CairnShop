@@ -40,7 +40,8 @@ public:
         const std::string& query,
         int limit,
         int offset,
-        std::string* error);
+        std::string* error,
+        bool only_active = true);
     std::optional<Product> GetProduct(uint64_t id, std::string* error);
 
     bool CreateCategory(const std::string& name,

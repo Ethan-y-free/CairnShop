@@ -38,6 +38,8 @@ add_library(cairnshop_core STATIC
     src/cart.cc
     src/promo.cc
     src/order.cc
+    src/audit.cc
+    src/config_admin.cc
 )
 
 target_include_directories(cairnshop_core PUBLIC

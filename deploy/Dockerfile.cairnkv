@@ -1,0 +1,34 @@
+FROM ubuntu:24.04 AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build \
+        librocksdb-dev libgtest-dev git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG CAIRNKV_REPO=https://github.com/Ethan-y-Free/CairnKV.git
+ARG CAIRNKV_TAG=v1.0.1
+
+RUN git clone --depth 1 --branch "${CAIRNKV_TAG}" "${CAIRNKV_REPO}" /src
+WORKDIR /src
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+        -DCAIRNKV_BUILD_SERVER=ON \
+        -DCAIRNKV_BUILD_CLIENT=ON \
+        -DCAIRNKV_BUILD_TOOLS=ON \
+        -DCAIRNKV_BUILD_BENCH=OFF \
+        -DCAIRNKV_BUILD_EXAMPLES=OFF \
+        -DCAIRNKV_BUILD_TESTS=OFF \
+    && cmake --build build -j"$(nproc)" --target cairnkd cairnctl
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        librocksdb-dev libssl3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /src/build/cairnkd /usr/local/bin/cairnkd
+COPY --from=build /src/build/tools/cairnctl/cairnctl /usr/local/bin/cairnctl
+
+EXPOSE 6666
+ENTRYPOINT ["cairnkd"]

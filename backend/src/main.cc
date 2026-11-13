@@ -15,10 +15,12 @@
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 
+#include "cairnshop/audit.h"
 #include "cairnshop/auth.h"
 #include "cairnshop/cart.h"
 #include "cairnshop/catalog.h"
 #include "cairnshop/config.h"
+#include "cairnshop/config_admin.h"
 #include "cairnshop/config_service.h"
 #include "cairnshop/crypto.h"
 #include "cairnshop/order.h"
@@ -145,6 +147,24 @@ std::string GetString(const nlohmann::json& body,
         return fallback;
     }
     return it->get<std::string>();
+}
+
+std::string RequestId(const httplib::Request& req)
+{
+    const std::string id = req.get_header_value("X-Request-Id");
+    return id.empty() ? RandomHex(8) : id.substr(0, 64);
+}
+
+std::string ClientIp(const httplib::Request& req)
+{
+    const std::string forwarded = req.get_header_value("X-Forwarded-For");
+    if (!forwarded.empty())
+    {
+        const size_t comma = forwarded.find(',');
+        return comma == std::string::npos ? forwarded
+                                          : forwarded.substr(0, comma);
+    }
+    return req.remote_addr;
 }
 
 std::string GetCookie(const httplib::Request& req, const std::string& name)
@@ -626,6 +646,8 @@ int main(int argc, char** argv)
 
     CartService cart_service(&pool);
     OrderService order_service(&pool, &config_service);
+    AuditService audit(&pool);
+    ConfigAdminService config_admin(&pool, &config_service, &audit);
 
     httplib::Server server;
 
@@ -1118,6 +1140,321 @@ int main(int argc, char** argv)
                     JsonResponse(res, 200, body);
                 });
 
+    server.Put("/api/v1/ops/config",
+               [&auth, &config_admin](const httplib::Request& req,
+                                      httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth, "ops");
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+                   std::optional<nlohmann::json> body = ParseBody(req, res);
+                   if (!body.has_value())
+                   {
+                       return;
+                   }
+                   const std::string key = GetString(*body, "key");
+                   const auto value_it = body->find("value");
+                   if (key.empty() || value_it == body->end() ||
+                       !value_it->is_object())
+                   {
+                       ErrorResponse(res, 400, "invalid_argument",
+                                     "key and an object value are required");
+                       return;
+                   }
+
+                   std::string error;
+                   int http_status = 500;
+                   std::optional<nlohmann::json> document =
+                       config_admin.Update(user->id,
+                                           user->role,
+                                           user->email,
+                                           key,
+                                           *value_it,
+                                           RequestId(req),
+                                           ClientIp(req),
+                                           &error,
+                                           &http_status);
+                   if (!document.has_value())
+                   {
+                       ErrorResponse(res, http_status,
+                                     "config_write_failed", error);
+                       return;
+                   }
+                   JsonResponse(res, 200, *document);
+               });
+
+    server.Get("/api/v1/ops/config/history",
+               [&auth, &config_admin](const httplib::Request& req,
+                                      httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth, "ops");
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+                   const std::string key = req.get_param_value("key");
+                   if (key.empty())
+                   {
+                       ErrorResponse(res, 400, "invalid_argument",
+                                     "key is required");
+                       return;
+                   }
+                   std::string error;
+                   int http_status = 500;
+                   std::optional<nlohmann::json> document =
+                       config_admin.History(key, &error, &http_status);
+                   if (!document.has_value())
+                   {
+                       ErrorResponse(res, http_status,
+                                     "config_history_failed", error);
+                       return;
+                   }
+                   JsonResponse(res, 200, *document);
+               });
+
+    server.Post("/api/v1/ops/config/rollback",
+                [&auth, &config_admin](const httplib::Request& req,
+                                       httplib::Response& res) {
+                    std::optional<User> user = RequireUser(req, res, auth, "ops");
+                    if (!user.has_value())
+                    {
+                        return;
+                    }
+                    std::optional<nlohmann::json> body = ParseBody(req, res);
+                    if (!body.has_value())
+                    {
+                        return;
+                    }
+                    const std::string key = GetString(*body, "key");
+                    int64_t version = 0;
+                    if (key.empty() || !GetInt64(*body, "version", &version) ||
+                        version <= 0)
+                    {
+                        ErrorResponse(res, 400, "invalid_argument",
+                                      "key and version are required");
+                        return;
+                    }
+
+                    std::string error;
+                    int http_status = 500;
+                    std::optional<nlohmann::json> document =
+                        config_admin.Rollback(user->id,
+                                              user->role,
+                                              user->email,
+                                              key,
+                                              static_cast<uint64_t>(version),
+                                              RequestId(req),
+                                              ClientIp(req),
+                                              &error,
+                                              &http_status);
+                    if (!document.has_value())
+                    {
+                        ErrorResponse(res, http_status,
+                                      "config_rollback_failed", error);
+                        return;
+                    }
+                    JsonResponse(res, 200, *document);
+                });
+
+    server.Get("/api/v1/ops/audit",
+               [&auth, &audit](const httplib::Request& req,
+                               httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth, "ops");
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+                   int limit = 50;
+                   int offset = 0;
+                   try
+                   {
+                       const std::string limit_param =
+                           req.get_param_value("limit");
+                       const std::string offset_param =
+                           req.get_param_value("offset");
+                       if (!limit_param.empty())
+                       {
+                           limit = std::stoi(limit_param);
+                       }
+                       if (!offset_param.empty())
+                       {
+                           offset = std::stoi(offset_param);
+                       }
+                   }
+                   catch (...)
+                   {
+                       ErrorResponse(res, 400, "invalid_argument",
+                                     "invalid limit or offset");
+                       return;
+                   }
+
+                   std::string error;
+                   std::optional<std::vector<AuditEntry>> entries =
+                       audit.List(limit, offset, &error);
+                   if (!entries.has_value())
+                   {
+                       ErrorResponse(res, 500, "db_error", error);
+                       return;
+                   }
+                   nlohmann::json body;
+                   body["entries"] = nlohmann::json::array();
+                   for (const AuditEntry& entry : *entries)
+                   {
+                       nlohmann::json item;
+                       item["id"] = entry.id;
+                       item["actor_id"] = entry.actor_id;
+                       item["actor_role"] = entry.actor_role;
+                       item["action"] = entry.action;
+                       item["target_type"] = entry.target_type;
+                       item["target_id"] = entry.target_id;
+                       item["request_id"] = entry.request_id;
+                       item["ip"] = entry.ip;
+                       item["created_at"] = entry.created_at;
+                       nlohmann::json before = nlohmann::json::parse(
+                           entry.before_json, nullptr, false);
+                       item["before"] =
+                           before.is_discarded()
+                               ? nlohmann::json(nullptr)
+                               : before;
+                       nlohmann::json after = nlohmann::json::parse(
+                           entry.after_json, nullptr, false);
+                       item["after"] =
+                           after.is_discarded()
+                               ? nlohmann::json(nullptr)
+                               : after;
+                       body["entries"].push_back(std::move(item));
+                   }
+                   body["limit"] = limit;
+                   body["offset"] = offset;
+                   JsonResponse(res, 200, body);
+               });
+
+    server.Get("/api/v1/ops/status",
+               [&auth, &pool, &config_service](const httplib::Request& req,
+                                               httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth, "ops");
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+
+                   nlohmann::json body;
+                   body["mysql_ok"] = pool.Ping();
+
+                   const ConfigSnapshot snapshot = config_service.Snapshot();
+                   body["config"]["age_ms"] = snapshot.age_ms;
+                   body["config"]["stale"] = snapshot.stale;
+                   body["config"]["connected"] = snapshot.connected;
+                   body["config"]["keys"] = snapshot.values.size();
+
+                   std::string error;
+                   std::optional<cairnkv::ClusterStatus> cluster =
+                       config_service.GetClusterStatus(&error);
+                   if (cluster.has_value())
+                   {
+                       const char* role = "follower";
+                       if (cluster->role == cairnkv::NodeRole::kLeader)
+                       {
+                           role = "leader";
+                       }
+                       else if (cluster->role == cairnkv::NodeRole::kCandidate)
+                       {
+                           role = "candidate";
+                       }
+                       body["cairnkv"]["ok"] = true;
+                       body["cairnkv"]["role"] = role;
+                       body["cairnkv"]["term"] = cluster->term;
+                       body["cairnkv"]["leader_id"] = cluster->leader_id;
+                       body["cairnkv"]["commit_index"] = cluster->commit_index;
+                       body["cairnkv"]["last_applied"] =
+                           cluster->last_applied;
+                       body["cairnkv"]["log_last_index"] =
+                           cluster->log_last_index;
+                       body["cairnkv"]["wal_bytes"] = cluster->wal_bytes;
+                   }
+                   else
+                   {
+                       body["cairnkv"]["ok"] = false;
+                       body["cairnkv"]["error"] = error;
+                   }
+
+                   JsonResponse(res, 200, body);
+               });
+
+    server.Get("/api/v1/ops/catalog/products",
+               [&auth, &catalog](const httplib::Request& req,
+                                 httplib::Response& res) {
+                   std::optional<User> user = RequireUser(req, res, auth, "ops");
+                   if (!user.has_value())
+                   {
+                       return;
+                   }
+
+                   std::optional<uint64_t> category_id;
+                   const std::string category_param =
+                       req.get_param_value("category_id");
+                   if (!category_param.empty())
+                   {
+                       try
+                       {
+                           category_id = std::stoull(category_param);
+                       }
+                       catch (...)
+                       {
+                           ErrorResponse(res, 400, "invalid_argument",
+                                         "invalid category_id");
+                           return;
+                       }
+                   }
+
+                   int limit = 50;
+                   int offset = 0;
+                   try
+                   {
+                       const std::string limit_param =
+                           req.get_param_value("limit");
+                       const std::string offset_param =
+                           req.get_param_value("offset");
+                       if (!limit_param.empty())
+                       {
+                           limit = std::stoi(limit_param);
+                       }
+                       if (!offset_param.empty())
+                       {
+                           offset = std::stoi(offset_param);
+                       }
+                   }
+                   catch (...)
+                   {
+                       ErrorResponse(res, 400, "invalid_argument",
+                                     "invalid limit or offset");
+                       return;
+                   }
+
+                   std::string error;
+                   std::optional<std::vector<Product>> products =
+                       catalog.ListProducts(category_id,
+                                            req.get_param_value("q"),
+                                            limit,
+                                            offset,
+                                            &error,
+                                            false);
+                   if (!products.has_value())
+                   {
+                       ErrorResponse(res, 500, "db_error", error);
+                       return;
+                   }
+                   nlohmann::json body;
+                   body["products"] = nlohmann::json::array();
+                   for (const Product& product : *products)
+                   {
+                       body["products"].push_back(ProductJson(product));
+                   }
+                   body["limit"] = limit;
+                   body["offset"] = offset;
+                   JsonResponse(res, 200, body);
+               });
+
     server.Get("/api/v1/ops/config",
                [&auth, &config_service](const httplib::Request& req,
                                         httplib::Response& res) {
@@ -1158,9 +1495,11 @@ int main(int argc, char** argv)
                });
 
     server.Post("/api/v1/ops/catalog/categories",
-                [&auth, &catalog](const httplib::Request& req,
-                                  httplib::Response& res) {
-                    if (!RequireUser(req, res, auth, "ops").has_value())
+                [&auth, &catalog, &audit](const httplib::Request& req,
+                                          httplib::Response& res) {
+                    std::optional<User> user =
+                        RequireUser(req, res, auth, "ops");
+                    if (!user.has_value())
                     {
                         return;
                     }
@@ -1191,13 +1530,30 @@ int main(int argc, char** argv)
                     response["id"] = id;
                     response["name"] = name;
                     response["slug"] = slug;
+
+                    std::string audit_error;
+                    if (!audit.Record(user->id,
+                                      user->role,
+                                      "catalog.category.create",
+                                      "category",
+                                      std::to_string(id),
+                                      "",
+                                      response.dump(),
+                                      RequestId(req),
+                                      ClientIp(req),
+                                      &audit_error))
+                    {
+                        LogError("audit_write", audit_error);
+                    }
                     JsonResponse(res, 201, response);
                 });
 
     server.Post("/api/v1/ops/catalog/products",
-                [&auth, &catalog](const httplib::Request& req,
-                                  httplib::Response& res) {
-                    if (!RequireUser(req, res, auth, "ops").has_value())
+                [&auth, &catalog, &audit](const httplib::Request& req,
+                                          httplib::Response& res) {
+                    std::optional<User> user =
+                        RequireUser(req, res, auth, "ops");
+                    if (!user.has_value())
                     {
                         return;
                     }
@@ -1247,13 +1603,31 @@ int main(int argc, char** argv)
                         return;
                     }
                     product.id = id;
-                    JsonResponse(res, 201, ProductJson(product));
+                    const nlohmann::json after = ProductJson(product);
+
+                    std::string audit_error;
+                    if (!audit.Record(user->id,
+                                      user->role,
+                                      "catalog.product.create",
+                                      "product",
+                                      std::to_string(id),
+                                      "",
+                                      after.dump(),
+                                      RequestId(req),
+                                      ClientIp(req),
+                                      &audit_error))
+                    {
+                        LogError("audit_write", audit_error);
+                    }
+                    JsonResponse(res, 201, after);
                 });
 
     server.Patch(R"(/api/v1/ops/catalog/products/(\d+))",
-                 [&auth, &catalog](const httplib::Request& req,
-                                   httplib::Response& res) {
-                     if (!RequireUser(req, res, auth, "ops").has_value())
+                 [&auth, &catalog, &audit](const httplib::Request& req,
+                                           httplib::Response& res) {
+                     std::optional<User> user =
+                         RequireUser(req, res, auth, "ops");
+                     if (!user.has_value())
                      {
                          return;
                      }
@@ -1267,6 +1641,7 @@ int main(int argc, char** argv)
                          ErrorResponse(res, 404, "not_found", error);
                          return;
                      }
+                     const nlohmann::json before = ProductJson(*existing);
 
                      std::optional<nlohmann::json> body = ParseBody(req, res);
                      if (!body.has_value())
@@ -1339,7 +1714,23 @@ int main(int argc, char** argv)
                          ErrorResponse(res, 409, "product_update_failed", error);
                          return;
                      }
-                     JsonResponse(res, 200, ProductJson(product));
+
+                     const nlohmann::json after = ProductJson(product);
+                     std::string audit_error;
+                     if (!audit.Record(user->id,
+                                       user->role,
+                                       "catalog.product.update",
+                                       "product",
+                                       std::to_string(id),
+                                       before.dump(),
+                                       after.dump(),
+                                       RequestId(req),
+                                       ClientIp(req),
+                                       &audit_error))
+                     {
+                         LogError("audit_write", audit_error);
+                     }
+                     JsonResponse(res, 200, after);
                  });
 
     nlohmann::json started;

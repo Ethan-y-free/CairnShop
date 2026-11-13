@@ -55,6 +55,15 @@ public:
     // Linearizable read used by the operations console.
     std::optional<std::pair<std::string, uint64_t>> GetLatest(
         const std::string& key,
+        std::string* error,
+        cairnkv::StatusCode* status_code = nullptr);
+
+    // Linearizable write used by the operations console.
+    bool PutLatest(const std::string& key,
+                   const std::string& value,
+                   std::string* error);
+
+    std::optional<cairnkv::ClusterStatus> GetClusterStatus(
         std::string* error);
 
 private:

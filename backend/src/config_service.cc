@@ -199,13 +199,66 @@ ConfigSnapshot ConfigService::Snapshot() const
     return snapshot;
 }
 
-std::optional<std::pair<std::string, uint64_t>> ConfigService::GetLatest(
-    const std::string& key,
+bool ConfigService::PutLatest(const std::string& key,
+                              const std::string& value,
+                              std::string* error)
+{
+    std::lock_guard<std::mutex> client_lock(client_mutex_);
+    if (!EnsureClientLocked(error))
+    {
+        return false;
+    }
+
+    const cairnkv::Status status = client_->Put(key, value);
+    if (!status.ok())
+    {
+        if (error != nullptr)
+        {
+            *error = status.ToString();
+        }
+        client_.reset();
+        next_seed_ = (next_seed_ + 1) % seeds_.size();
+        return false;
+    }
+    return true;
+}
+
+std::optional<cairnkv::ClusterStatus> ConfigService::GetClusterStatus(
     std::string* error)
 {
     std::lock_guard<std::mutex> client_lock(client_mutex_);
     if (!EnsureClientLocked(error))
     {
+        return std::nullopt;
+    }
+
+    cairnkv::StatusOr<cairnkv::ClusterStatus> status =
+        client_->GetStatus();
+    if (!status.ok())
+    {
+        if (error != nullptr)
+        {
+            *error = status.status().ToString();
+        }
+        client_.reset();
+        next_seed_ = (next_seed_ + 1) % seeds_.size();
+        return std::nullopt;
+    }
+    return *status;
+}
+
+std::optional<std::pair<std::string, uint64_t>> ConfigService::GetLatest(
+    const std::string& key,
+    std::string* error,
+    cairnkv::StatusCode* status_code)
+{
+    std::lock_guard<std::mutex> client_lock(client_mutex_);
+    if (!EnsureClientLocked(error))
+    {
+        if (status_code != nullptr)
+        {
+            *status_code = cairnkv::StatusCode::kUnavailable;
+        }
         return std::nullopt;
     }
 
@@ -218,9 +271,20 @@ std::optional<std::pair<std::string, uint64_t>> ConfigService::GetLatest(
         {
             *error = result.status().ToString();
         }
-        client_.reset();
-        next_seed_ = (next_seed_ + 1) % seeds_.size();
+        if (status_code != nullptr)
+        {
+            *status_code = result.status().code();
+        }
+        if (result.status().code() != cairnkv::StatusCode::kNotFound)
+        {
+            client_.reset();
+            next_seed_ = (next_seed_ + 1) % seeds_.size();
+        }
         return std::nullopt;
+    }
+    if (status_code != nullptr)
+    {
+        *status_code = cairnkv::StatusCode::kOk;
     }
     return std::make_pair(result->value, result->applied_index);
 }

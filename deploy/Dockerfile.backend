@@ -1,0 +1,31 @@
+FROM ubuntu:24.04 AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build \
+        libmysqlclient-dev libssl-dev libgtest-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build -j"$(nproc)"
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libmysqlclient-dev libssl3 curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --shell /usr/sbin/nologin cairnshop
+
+WORKDIR /app
+COPY --from=build /src/build/backend/cairnshop-backend /usr/local/bin/cairnshop-backend
+COPY db /app/db
+
+USER cairnshop
+EXPOSE 8080
+
+ENTRYPOINT ["cairnshop-backend"]
+CMD ["serve"]
